@@ -636,7 +636,7 @@ make_inference_tiles <- function(r, tile_size = 1000, overlap = 50) {
 #'
 #' Supporte les deux architectures Open-Canopy :
 #' - UNet (SMP, ResNet34) : reconstruction directe via segmentation_models_pytorch
-#' - PVTv2 (timm, pvt_v2_b3) : nécessite le code source Open-Canopy
+#' - PVTv2 (timm, pvt_v2_b3) : module embarqué ou code source Open-Canopy
 #'
 #' @param tile SpatRaster (4 bandes : R, G, B, PIR à 1.5m)
 #' @param model_path Chemin du modèle .ckpt (PyTorch Lightning)
@@ -692,6 +692,7 @@ print(f"Tensor: shape={tuple(tensor.shape)}, "
 # ======================================================================
 ckpt_path = "__MODEL_PATH__"
 oc_src = "__OC_SRC__"
+embedded_py = "__EMBEDDED_PY__"
 
 # Ajouter Open-Canopy au path avant chargement (le checkpoint peut
 # referencer des classes du module src)
@@ -699,6 +700,12 @@ if oc_src and os.path.isdir(oc_src):
     if oc_src not in sys.path:
         sys.path.insert(0, oc_src)
         print(f"Open-Canopy source ajoute au path: {oc_src}")
+
+# Ajouter le module embarque au path (pour PVTv2 sans repo externe)
+if embedded_py and os.path.isdir(embedded_py):
+    if embedded_py not in sys.path:
+        sys.path.insert(0, embedded_py)
+        print(f"Module timmNet embarque disponible: {embedded_py}")
 
 import types as _types
 
@@ -853,24 +860,35 @@ if has_seg_model or (model_name == "unet" and not has_timm_model):
 elif has_timm_model or has_seg_head or model_name == "pvtv2":
     print("=== Reconstruction: PVTv2 (timm pvt_v2_b3, 4ch, 1 classe) ===")
 
-    if oc_src and os.path.isdir(oc_src):
-        try:
-            from src.models.components.timmNet import timmNet
-            print("Import timmNet depuis Open-Canopy reussi")
+    _timmNet = None
 
-            # Reconstruire le modele PVTv2 avec les memes parametres
-            # que configs/model/PVTv2_B.yaml + _seg_default.yaml
-            pvt_model = timmNet(
+    # Strategie 1 : module embarque (aucune dependance externe)
+    try:
+        from timmnet_standalone import timmNet as _timmNet
+        print("Import timmNet depuis module embarque (standalone)")
+    except ImportError:
+        pass
+
+    # Strategie 2 : code source Open-Canopy (si fourni)
+    if _timmNet is None and oc_src and os.path.isdir(oc_src):
+        try:
+            from src.models.components.timmNet import timmNet as _timmNet
+            print("Import timmNet depuis Open-Canopy source")
+        except ImportError as e:
+            print(f"Import Open-Canopy echoue: {e}")
+
+    if _timmNet is not None:
+        try:
+            pvt_model = _timmNet(
                 backbone="pvt_v2_b3.in1k",
                 num_classes=1,
                 num_channels=num_bands,
-                pretrained=False,       # pas besoin, on charge le checkpoint
+                pretrained=False,
                 pretrained_path=None,
-                img_size=max(H, W),     # taille de l image d entree
+                img_size=max(H, W),
                 use_FPN=False,
             )
 
-            # Cles Lightning : "net.model.xxx" et "net.seg_head.xxx"
             clean_dict = clean_state_dict(state_dict, ["net.", "model."])
 
             missing, unexpected = pvt_model.load_state_dict(
@@ -886,20 +904,15 @@ elif has_timm_model or has_seg_head or model_name == "pvtv2":
             model = pvt_model
             print("PVTv2 charge avec succes")
 
-        except ImportError as e:
-            print(f"Erreur import Open-Canopy: {e}")
-            print("Verifiez que le code source est complet.")
         except Exception as e:
             print(f"Erreur reconstruction PVTv2: {e}")
             import traceback
             traceback.print_exc()
     else:
-        print("ERREUR: Le modele PVTv2 necessite le code source Open-Canopy.")
-        print(f"  Chemin fourni: {oc_src!r}")
-        print("  Utilisez le parametre open_canopy_src dans pipeline_aoi_to_chm()")
-        print("  Exemple:")
-        print(\'    pipeline_aoi_to_chm("aoi.gpkg", model_name="pvtv2",\')
-        print(\'      open_canopy_src="C:/Users/.../Open-Canopy")\')
+        print("ERREUR: Impossible de charger timmNet.")
+        print("  Verifiez que timm est installe: pip install timm")
+        print(f"  Module embarque: {embedded_py!r}")
+        print(f"  Open-Canopy src: {oc_src!r}")
 
 # ======================================================================
 # Inference
@@ -943,11 +956,31 @@ with rasterio.open("__OUTPUT_PATH__", "w", **profile) as dst:
 
 print("Prediction sauvegardee")
 '
+  # Chemin vers le module Python embarqué (timmnet_standalone)
+  embedded_py_dir <- system.file("python", package = "opencanopy")
+  if (!nzchar(embedded_py_dir)) {
+    # Fallback: package non installé, utiliser le chemin source
+    embedded_py_dir <- file.path(
+      system.file(package = "opencanopy"),
+      "python"
+    )
+    if (!dir.exists(embedded_py_dir)) {
+      # Dernier recours : chemin relatif depuis le code source
+      pkg_root <- tryCatch(
+        rprojroot::find_package_root_file(),
+        error = function(e) getwd()
+      )
+      embedded_py_dir <- file.path(pkg_root, "inst", "python")
+    }
+  }
+  embedded_py_py <- gsub("\\\\", "/", embedded_py_dir)
+
   # Substitution des placeholders (evite sprintf et ses limites)
   py_code <- gsub("__INPUT_PATH__", tmp_in_py, py_code, fixed = TRUE)
   py_code <- gsub("__MODEL_PATH__", model_path_py, py_code, fixed = TRUE)
   py_code <- gsub("__MODEL_NAME__", model_name, py_code, fixed = TRUE)
   py_code <- gsub("__OC_SRC__", oc_src_py, py_code, fixed = TRUE)
+  py_code <- gsub("__EMBEDDED_PY__", embedded_py_py, py_code, fixed = TRUE)
   py_code <- gsub("__OUTPUT_PATH__", tmp_out_py, py_code, fixed = TRUE)
 
   tryCatch({
@@ -1065,8 +1098,8 @@ run_inference <- function(rvb, irc, model_path, model_name = "pvtv2",
 #' @param model_name "unet" ou "pvtv2"
 #' @param model_path Chemin local vers un checkpoint .ckpt (optionnel,
 #'   sinon téléchargé depuis HuggingFace)
-#' @param open_canopy_src Chemin vers le code source Open-Canopy (nécessaire
-#'   pour PVTv2, auto-détecté sinon)
+#' @param open_canopy_src Chemin vers le code source Open-Canopy (optionnel,
+#'   le module embarqué timmnet_standalone est utilisé par défaut)
 #' @param res_m Résolution de téléchargement IGN (0.2m par défaut)
 #' @param millesime_ortho Millésime ortho RVB (NULL = plus récent)
 #' @param millesime_irc Millésime IRC (NULL = plus récent)
@@ -1118,9 +1151,9 @@ pipeline_aoi_to_chm <- function(aoi_path,
   # --- Étape 4 : Inférence ---
   message("\n>>> ÉTAPE 4/5 : Inférence du modèle ", model_name)
 
-  # Auto-détecter le code source Open-Canopy si nécessaire (pour PVTv2)
+  # Auto-détecter le code source Open-Canopy (optionnel pour PVTv2,
+  # le module embarqué timmnet_standalone.py suffit normalement)
   if (is.null(open_canopy_src) && model_name == "pvtv2") {
-    # Chercher dans les emplacements courants
     candidates <- c(
       file.path(getwd(), "Open-Canopy"),
       file.path(dirname(getwd()), "Open-Canopy"),
@@ -1134,10 +1167,9 @@ pipeline_aoi_to_chm <- function(aoi_path,
         break
       }
     }
+    # Plus de stop() ici : le module embarqué prend le relais
     if (is.null(open_canopy_src)) {
-      stop("Le modèle PVTv2 nécessite le code source Open-Canopy.\n",
-           "Clonez le dépôt: git clone https://github.com/fajwel/Open-Canopy\n",
-           "Puis passez le chemin: open_canopy_src = 'chemin/vers/Open-Canopy'")
+      message("Note: Open-Canopy source non trouvé, utilisation du module embarqué")
     }
   }
 
