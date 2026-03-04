@@ -1638,9 +1638,25 @@ pipeline_aoi_to_chm <- function(aoi_path,
     library(patchwork)
     library(tidyterra)
 
+    # Sous-échantillonnage pour affichage interactif (max ~800x800 px)
+    max_dim <- 800
+    agg_factor <- max(1, ceiling(max(nrow(chm), ncol(chm)) / max_dim))
+    if (agg_factor > 1) {
+      message("Sous-échantillonnage x", agg_factor, " pour affichage RStudio")
+      rvb_disp  <- aggregate(ortho$rvb, fact = agg_factor, fun = "mean")
+      irc_disp  <- aggregate(ortho$irc, fact = agg_factor, fun = "mean")
+      ndvi_disp <- aggregate(ndvi,      fact = agg_factor, fun = "mean")
+      chm_disp  <- aggregate(chm,       fact = agg_factor, fun = "mean")
+    } else {
+      rvb_disp  <- ortho$rvb
+      irc_disp  <- ortho$irc
+      ndvi_disp <- ndvi
+      chm_disp  <- chm
+    }
+
     # Panel 1 : Ortho RVB
     p_rvb <- ggplot() +
-      geom_spatraster_rgb(data = ortho$rvb, r = 1, g = 2, b = 3,
+      geom_spatraster_rgb(data = rvb_disp, r = 1, g = 2, b = 3,
                           max_col_value = 255) +
       labs(title = sprintf("Ortho RVB 0.20m (%s)", label_ortho)) +
       theme_minimal() +
@@ -1651,7 +1667,7 @@ pipeline_aoi_to_chm <- function(aoi_path,
 
     # Panel 2 : Ortho IRC fausses couleurs
     p_irc <- ggplot() +
-      geom_spatraster_rgb(data = ortho$irc, r = 1, g = 2, b = 3,
+      geom_spatraster_rgb(data = irc_disp, r = 1, g = 2, b = 3,
                           max_col_value = 255) +
       labs(title = sprintf("Ortho IRC 0.20m (%s)", label_irc)) +
       theme_minimal() +
@@ -1662,7 +1678,7 @@ pipeline_aoi_to_chm <- function(aoi_path,
 
     # Panel 3 : NDVI
     p_ndvi <- ggplot() +
-      geom_spatraster(data = ndvi) +
+      geom_spatraster(data = ndvi_disp) +
       scale_fill_gradientn(
         colours = c("#d73027", "#fc8d59", "#fee08b", "#ffffbf",
                     "#d9ef8b", "#91cf60", "#1a9850", "#006837"),
@@ -1678,7 +1694,7 @@ pipeline_aoi_to_chm <- function(aoi_path,
 
     # Panel 4 : CHM
     p_chm <- ggplot() +
-      geom_spatraster(data = chm) +
+      geom_spatraster(data = chm_disp) +
       scale_fill_gradientn(
         colours = c("#f7fcb9", "#addd8e", "#41ab5d", "#006837", "#004529"),
         na.value = "transparent",
