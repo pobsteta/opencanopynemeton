@@ -1279,7 +1279,9 @@ elif has_timm_model or has_seg_head or model_name == "pvtv2":
     # reconstruire le seg_head avec le bon decoder_stride
     _model_seg_keys = [k for k in pvt_model.state_dict().keys() if "seg_head" in k]
     if len(_seg_ckpt_keys) > 0 and len(_model_seg_keys) != len(_seg_ckpt_keys):
-        _ds = pvt_model.downsample_factor if not _has_nested else 2
+        _dsf = pvt_model.downsample_factor
+        _dsf = _dsf[-1] if isinstance(_dsf, (list, tuple)) else _dsf
+        _ds = _dsf if not _has_nested else 2
         print(f"  Reconstruction seg_head: {len(_model_seg_keys)} -> {len(_seg_ckpt_keys)} cles (decoder_stride={_ds})")
         from timmnet_standalone import SimpleSegmentationHead
         pvt_model.seg_head = SimpleSegmentationHead(
