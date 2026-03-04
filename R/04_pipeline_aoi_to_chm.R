@@ -516,7 +516,12 @@ find_checkpoint_name <- function(repo_id = HF_REPO_ID,
   path <- as.character(path)
 
   # Si le fichier est directement lisible, tout va bien
-  if (file.exists(path) && file.size(path) > 0) {
+  # suppressWarnings : sur Windows, file.size() sur un symlink HF
+  # génère un avertissement "Nom de répertoire non valide"
+  readable <- suppressWarnings(
+    file.exists(path) && !is.na(file.size(path)) && file.size(path) > 0
+  )
+  if (readable) {
     return(normalizePath(path, winslash = "/"))
   }
 
@@ -531,10 +536,11 @@ find_checkpoint_name <- function(repo_id = HF_REPO_ID,
       # Chercher le plus gros fichier .ckpt-compatible (le checkpoint)
       blobs <- list.files(blobs_dir, full.names = TRUE)
       if (length(blobs) > 0) {
-        sizes <- file.size(blobs)
+        sizes <- suppressWarnings(file.size(blobs))
         # Prendre le plus gros blob (le checkpoint est le plus volumineux)
         best <- blobs[which.max(sizes)]
-        if (!is.na(file.size(best)) && file.size(best) > 1e6) {
+        best_size <- suppressWarnings(file.size(best))
+        if (!is.na(best_size) && best_size > 1e6) {
           message("  Windows: résolution symlink HF → ", best)
           return(normalizePath(best, winslash = "/"))
         }
@@ -543,10 +549,12 @@ find_checkpoint_name <- function(repo_id = HF_REPO_ID,
 
     # Alternative : lire le fichier symlink comme texte
     # (HF crée parfois un fichier texte contenant le hash du blob)
-    if (file.exists(path) && file.size(path) < 200) {
+    path_size <- suppressWarnings(file.size(path))
+    if (file.exists(path) && !is.na(path_size) && path_size < 200) {
       blob_hash <- trimws(readLines(path, n = 1, warn = FALSE))
       blob_path <- file.path(repo_dir, "blobs", blob_hash)
-      if (file.exists(blob_path) && file.size(blob_path) > 1e6) {
+      blob_size <- suppressWarnings(file.size(blob_path))
+      if (file.exists(blob_path) && !is.na(blob_size) && blob_size > 1e6) {
         message("  Windows: résolution hash HF → ", blob_path)
         return(normalizePath(blob_path, winslash = "/"))
       }
