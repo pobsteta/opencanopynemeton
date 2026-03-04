@@ -473,6 +473,62 @@ find_checkpoint_name <- function(repo_id = HF_REPO_ID,
   return(ckpt_files[1])
 }
 
+#' Résoudre le chemin réel d'un fichier HuggingFace cache
+#'
+#' Sur Windows, le cache HF utilise des symlinks (snapshots/ → blobs/)
+#' qui ne fonctionnent pas sans le mode développeur. Cette fonction
+#' résout le chemin réel ou copie le fichier blob si nécessaire.
+#'
+#' @param path Chemin retourné par hub_download
+#' @return Chemin réel accessible
+#' @keywords internal
+.resolve_hf_path <- function(path) {
+  path <- as.character(path)
+
+  # Si le fichier est directement lisible, tout va bien
+  if (file.exists(path) && file.size(path) > 0) {
+    return(normalizePath(path, winslash = "/"))
+  }
+
+  # Sur Windows : le symlink snapshots/xxx/file → blobs/yyy ne marche pas
+  # Chercher le fichier dans le dossier blobs/ du même repo
+  if (.Platform$OS.type == "windows" && grepl("snapshots", path)) {
+    repo_dir <- sub("/snapshots/.*$", "", path)
+    blobs_dir <- file.path(repo_dir, "blobs")
+
+    if (dir.exists(blobs_dir)) {
+      # Les blobs sont nommés par leur hash SHA256
+      # Chercher le plus gros fichier .ckpt-compatible (le checkpoint)
+      blobs <- list.files(blobs_dir, full.names = TRUE)
+      if (length(blobs) > 0) {
+        sizes <- file.size(blobs)
+        # Prendre le plus gros blob (le checkpoint est le plus volumineux)
+        best <- blobs[which.max(sizes)]
+        if (!is.na(file.size(best)) && file.size(best) > 1e6) {
+          message("  Windows: résolution symlink HF → ", best)
+          return(normalizePath(best, winslash = "/"))
+        }
+      }
+    }
+
+    # Alternative : lire le fichier symlink comme texte
+    # (HF crée parfois un fichier texte contenant le hash du blob)
+    if (file.exists(path) && file.size(path) < 200) {
+      blob_hash <- trimws(readLines(path, n = 1, warn = FALSE))
+      blob_path <- file.path(repo_dir, "blobs", blob_hash)
+      if (file.exists(blob_path) && file.size(blob_path) > 1e6) {
+        message("  Windows: résolution hash HF → ", blob_path)
+        return(normalizePath(blob_path, winslash = "/"))
+      }
+    }
+
+    warning("Chemin HuggingFace inaccessible: ", path, "\n",
+            "  Activez le mode développeur Windows ou téléchargez le modèle manuellement.")
+  }
+
+  path
+}
+
 #' Télécharger le modèle pré-entraîné depuis Hugging Face
 #'
 #' Utilise le package R hfhub (natif, sans Python) pour télécharger
@@ -493,6 +549,7 @@ download_model <- function(model_name = "pvtv2") {
       tryCatch({
         local_path <- hfhub::hub_download(HF_REPO_ID, ckpt_name,
                                             repo_type = "dataset")
+        local_path <- .resolve_hf_path(local_path)
         message("  Modèle téléchargé: ", local_path)
         return(local_path)
       }, error = function(e) {
@@ -581,6 +638,7 @@ download_model <- function(model_name = "pvtv2") {
       filename = paste0("pretrained_models/", target_file),
       repo_type = "dataset"
     )
+    local_path <- .resolve_hf_path(local_path)
     message("Modèle: ", local_path)
     return(local_path)
 
@@ -752,6 +810,9 @@ predict_tile <- function(tile, model_path, model_name = "pvtv2",
   tmp_in <- tempfile(tmpdir = tmp_dir, fileext = ".tif")
   tmp_out <- tempfile(tmpdir = tmp_dir, fileext = ".tif")
   writeRaster(tile, tmp_in, overwrite = TRUE)
+
+  # Résoudre le chemin modèle (symlinks HF sur Windows)
+  model_path <- .resolve_hf_path(model_path)
 
   # Normaliser les chemins pour Python sous Windows
   tmp_in_py <- gsub("\\\\", "/", tmp_in)
