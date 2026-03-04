@@ -64,7 +64,7 @@ setup_conda_env <- function(envname = CONDA_ENV) {
 #' @param model_name "unet" ou "pvtv2" pour filtrer
 #' @return Chemin du fichier checkpoint dans le dépôt, ou NULL
 find_checkpoint_name <- function(repo_id = "AI4Forest/Open-Canopy",
-                                  model_name = "unet") {
+                                  model_name = "pvtv2") {
   url <- paste0("https://huggingface.co/api/datasets/", repo_id)
   resp <- tryCatch(
     httr2::request(url) |> httr2::req_perform(),
@@ -96,7 +96,7 @@ find_checkpoint_name <- function(repo_id = "AI4Forest/Open-Canopy",
 #'
 #' @param model_name "unet" ou "pvtv2"
 #' @return Chemin local du modèle
-download_pretrained_model <- function(model_name = "unet") {
+download_pretrained_model <- function(model_name = "pvtv2") {
   repo_id <- "AI4Forest/Open-Canopy"
 
   model_files <- list(

@@ -10,13 +10,13 @@
 #
 # Arguments (optionnels) :
 #   1. Chemin vers le fichier .gpkg (défaut: data/aoi.gpkg)
-#   2. Nom du modèle : "unet" ou "pvtv2" (défaut: unet)
+#   2. Nom du modèle : "unet" ou "pvtv2" (défaut: pvtv2)
 # ==============================================================================
 
 # --- Paramètres CLI ---
 args <- commandArgs(trailingOnly = TRUE)
 aoi_path   <- if (length(args) >= 1) args[1] else "data/aoi.gpkg"
-model_name <- if (length(args) >= 2) args[2] else "unet"
+model_name <- if (length(args) >= 2) args[2] else "pvtv2"
 
 cat("==============================================================\n")
 cat("  Test du package open_canopy_nemeton\n")

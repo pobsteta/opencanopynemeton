@@ -449,7 +449,7 @@ setup_python <- function() {
 #' @param model_name "unet" ou "pvtv2" pour filtrer
 #' @return Chemin du fichier checkpoint dans le dépôt, ou NULL
 find_checkpoint_name <- function(repo_id = HF_REPO_ID,
-                                  model_name = "unet") {
+                                  model_name = "pvtv2") {
   url <- paste0("https://huggingface.co/api/datasets/", repo_id)
   resp <- tryCatch(
     httr2::request(url) |> httr2::req_perform(),
@@ -481,7 +481,7 @@ find_checkpoint_name <- function(repo_id = HF_REPO_ID,
 #'
 #' @param model_name "unet" ou "pvtv2"
 #' @return Chemin local du modèle
-download_model <- function(model_name = "unet") {
+download_model <- function(model_name = "pvtv2") {
   message("Téléchargement du modèle: ", model_name)
   message("Depuis: ", HF_REPO_ID)
 
@@ -643,7 +643,7 @@ make_inference_tiles <- function(r, tile_size = 1000, overlap = 50) {
 #' @param model_name "unet" ou "pvtv2" pour la reconstruction
 #' @param open_canopy_src Chemin vers le code source Open-Canopy (pour PVTv2)
 #' @return SpatRaster CHM prédit (1 bande, en mètres)
-predict_tile <- function(tile, model_path, model_name = "unet",
+predict_tile <- function(tile, model_path, model_name = "pvtv2",
                           open_canopy_src = NULL) {
   library(reticulate)
 
@@ -1014,7 +1014,7 @@ combine_rvb_irc <- function(rvb, irc) {
 #' @param model_name "unet" ou "pvtv2"
 #' @param tile_size Taille des tuiles en mètres
 #' @return SpatRaster CHM prédit
-run_inference <- function(rvb, irc, model_path, model_name = "unet",
+run_inference <- function(rvb, irc, model_path, model_name = "pvtv2",
                            tile_size = 1000, open_canopy_src = NULL) {
   message("\n=== Inférence Open-Canopy ===")
 
@@ -1073,7 +1073,7 @@ run_inference <- function(rvb, irc, model_path, model_name = "unet",
 #' @return Liste avec tous les résultats
 pipeline_aoi_to_chm <- function(aoi_path,
                                   output_dir = file.path(getwd(), "outputs"),
-                                  model_name = "unet",
+                                  model_name = "pvtv2",
                                   model_path = NULL,
                                   open_canopy_src = NULL,
                                   res_m = RES_IGN,
