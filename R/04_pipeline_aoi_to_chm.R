@@ -961,91 +961,82 @@ elif has_timm_model or has_seg_head or model_name == "pvtv2":
     print("=== Reconstruction: PVTv2 (timm pvt_v2_b3, 4ch, 1 classe) ===")
 
     _timmNet = None
+    _import_errors = []
 
     # Strategie 1 : module embarque (aucune dependance externe)
     try:
         from timmnet_standalone import timmNet as _timmNet
         print("Import timmNet depuis module embarque (standalone)")
-    except ImportError:
-        pass
+    except Exception as e:
+        _import_errors.append(f"Module embarque: {e}")
+        print(f"Import module embarque echoue: {e}")
 
     # Strategie 2 : code source Open-Canopy (si fourni)
     if _timmNet is None and oc_src and os.path.isdir(oc_src):
         try:
             from src.models.components.timmNet import timmNet as _timmNet
             print("Import timmNet depuis Open-Canopy source")
-        except ImportError as e:
+        except Exception as e:
+            _import_errors.append(f"Open-Canopy source: {e}")
             print(f"Import Open-Canopy echoue: {e}")
 
-    if _timmNet is not None:
-        try:
-            pvt_model = _timmNet(
-                backbone="pvt_v2_b3.in1k",
-                num_classes=1,
-                num_channels=num_bands,
-                pretrained=False,
-                pretrained_path=None,
-                img_size=max(H, W),
-                use_FPN=False,
-            )
+    if _timmNet is None:
+        msg = "Impossible de charger timmNet pour PVTv2.\\n"
+        msg += f"  Module embarque: {embedded_py!r}\\n"
+        msg += f"  Open-Canopy src: {oc_src!r}\\n"
+        for err in _import_errors:
+            msg += f"  - {err}\\n"
+        msg += "  Verifiez que timm est installe: pip install timm"
+        raise RuntimeError(msg)
 
-            clean_dict = clean_state_dict(state_dict, ["net.", "model."])
+    pvt_model = _timmNet(
+        backbone="pvt_v2_b3.in1k",
+        num_classes=1,
+        num_channels=num_bands,
+        pretrained=False,
+        pretrained_path=None,
+        img_size=max(H, W),
+        use_FPN=False,
+    )
 
-            missing, unexpected = pvt_model.load_state_dict(
-                clean_dict, strict=False)
-            if missing:
-                print(f"  Cles manquantes: {len(missing)}")
-                for m in missing[:3]:
-                    print(f"    - {m}")
-            if unexpected:
-                print(f"  Cles inattendues: {len(unexpected)}")
+    clean_dict = clean_state_dict(state_dict, ["net.", "model."])
 
-            pvt_model.eval()
-            model = pvt_model
-            print("PVTv2 charge avec succes")
+    missing, unexpected = pvt_model.load_state_dict(
+        clean_dict, strict=False)
+    if missing:
+        print(f"  Cles manquantes: {len(missing)}")
+        for m in missing[:3]:
+            print(f"    - {m}")
+    if unexpected:
+        print(f"  Cles inattendues: {len(unexpected)}")
 
-        except Exception as e:
-            print(f"Erreur reconstruction PVTv2: {e}")
-            import traceback
-            traceback.print_exc()
-    else:
-        print("ERREUR: Impossible de charger timmNet.")
-        print("  Verifiez que timm est installe: pip install timm")
-        print(f"  Module embarque: {embedded_py!r}")
-        print(f"  Open-Canopy src: {oc_src!r}")
+    pvt_model.eval()
+    model = pvt_model
+    print("PVTv2 charge avec succes")
 
 # ======================================================================
 # Inference
 # ======================================================================
+if model is None:
+    raise RuntimeError("Le modele n'a pas pu etre charge. Verifiez les logs ci-dessus.")
+
 with torch.no_grad():
-    if model is not None:
-        output = model(tensor)
+    output = model(tensor)
 
-        # Le modele retourne {"out": tensor} (Open-Canopy) ou tensor (SMP)
-        if isinstance(output, dict):
-            pred = output["out"]
-        else:
-            pred = output
-
-        pred = pred.squeeze().cpu().numpy()
-
-        # Le modele predit en metres (targets = dm / 10)
-        pred = np.clip(pred, 0, 50)
-        pred = np.round(pred, 1)
-
-        print(f"CHM predit: min={pred.min():.1f}m, max={pred.max():.1f}m, "
-              f"mean={pred.mean():.1f}m")
+    # Le modele retourne {"out": tensor} (Open-Canopy) ou tensor (SMP)
+    if isinstance(output, dict):
+        pred = output["out"]
     else:
-        print("ATTENTION: Modele non charge, fallback estimation NDVI-based")
-        img = tensor.squeeze().numpy()
-        if num_bands >= 4:
-            pir = img[3]
-            rouge = img[0]
-            ndvi = (pir - rouge) / (pir + rouge + 1e-6)
-            pred = np.clip(ndvi * 25, 0, 40)
-        else:
-            greenness = img[1] / (img.mean(axis=0) + 1e-6)
-            pred = np.clip(greenness * 20, 0, 40)
+        pred = output
+
+    pred = pred.squeeze().cpu().numpy()
+
+    # Le modele predit en metres (targets = dm / 10)
+    pred = np.clip(pred, 0, 50)
+    pred = np.round(pred, 1)
+
+    print(f"CHM predit: min={pred.min():.1f}m, max={pred.max():.1f}m, "
+          f"mean={pred.mean():.1f}m")
 
 # ======================================================================
 # Sauvegarder le resultat
@@ -1092,17 +1083,7 @@ print("Prediction sauvegardee")
     rm(pred_disk)
     return(pred)
   }, error = function(e) {
-    warning("Erreur inférence: ", e$message)
-    message("  Utilisation d'une estimation NDVI alternative...")
-    if (nlyr(tile) >= 4) {
-      pir <- tile[[4]]
-      rouge <- tile[[1]]
-      ndvi <- (pir - rouge) / (pir + rouge + 0.001)
-      pred <- clamp(ndvi * 25, lower = 0, upper = 40)
-      names(pred) <- "chm_estimated"
-      return(pred)
-    }
-    return(NULL)
+    stop("Erreur inférence du modèle: ", e$message, call. = FALSE)
   }, finally = {
     unlink(c(tmp_in, tmp_out))
   })
