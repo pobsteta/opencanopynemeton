@@ -1043,7 +1043,7 @@ def smart_load_state_dict(model, ckpt_state_dict, prefixes_to_strip):
         # en normalisant dots et underscores dans les numeros
         def normalize_key(k):
             """stages_0.blocks_1 -> stages.0.blocks.1"""
-            return re.sub(r"_(\d+)", r".\1", k)
+            return re.sub(r"_(\\d+)", r".\\1", k)
 
         model_norm = {normalize_key(k): k for k in model_keys}
         ckpt_norm = {normalize_key(k): k for k in ckpt_keys}
