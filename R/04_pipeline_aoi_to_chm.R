@@ -953,8 +953,10 @@ dm_hparams = checkpoint.get("datamodule_hyper_parameters", {})
 model_hparams = checkpoint.get("hyper_parameters", {})
 
 print(f"Datamodule hparams: {dm_hparams}")
-print(f"Model hparams (extrait): num_channels={model_hparams.get('num_channels', '?')}, "
-      f"mean={dm_hparams.get('mean', '?')}, std={dm_hparams.get('std', '?')}")
+_nc = model_hparams.get("num_channels", "?")
+_mn = dm_hparams.get("mean", "?")
+_sd = dm_hparams.get("std", "?")
+print(f"Model hparams: num_channels={_nc}, mean={_mn}, std={_sd}")
 
 # Recuperer mean/std pour la normalisation
 _ckpt_mean = dm_hparams.get("mean", None)
