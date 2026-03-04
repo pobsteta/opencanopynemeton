@@ -1251,16 +1251,46 @@ elif has_timm_model or has_seg_head or model_name == "pvtv2":
     _img_size = ((max(H, W) + _pad_multiple - 1) // _pad_multiple) * _pad_multiple
     print(f"  img_size ajuste: {max(H, W)} -> {_img_size} (multiple de {_pad_multiple})")
 
-    pvt_model = _timmNet(
-        backbone="pvt_v2_b3.in1k",
-        num_classes=1,
-        num_channels=num_bands,
-        pretrained=False,
-        pretrained_path=None,
-        img_size=_img_size,
-        use_FPN=False,
-        decoder_stride=_decoder_stride,
-    )
+    # Creer le modele (compatible ancien et nouveau timmnet_standalone)
+    try:
+        pvt_model = _timmNet(
+            backbone="pvt_v2_b3.in1k",
+            num_classes=1,
+            num_channels=num_bands,
+            pretrained=False,
+            pretrained_path=None,
+            img_size=_img_size,
+            use_FPN=False,
+            decoder_stride=_decoder_stride,
+        )
+    except TypeError:
+        # Ancienne version sans decoder_stride - on le remplace apres
+        pvt_model = _timmNet(
+            backbone="pvt_v2_b3.in1k",
+            num_classes=1,
+            num_channels=num_bands,
+            pretrained=False,
+            pretrained_path=None,
+            img_size=_img_size,
+            use_FPN=False,
+        )
+
+    # Si le checkpoint a un seg_head simple (2 cles) mais le modele en a plus,
+    # reconstruire le seg_head avec le bon decoder_stride
+    _model_seg_keys = [k for k in pvt_model.state_dict().keys() if "seg_head" in k]
+    if len(_seg_ckpt_keys) > 0 and len(_model_seg_keys) != len(_seg_ckpt_keys):
+        _ds = pvt_model.downsample_factor if not _has_nested else 2
+        print(f"  Reconstruction seg_head: {len(_model_seg_keys)} -> {len(_seg_ckpt_keys)} cles (decoder_stride={_ds})")
+        from timmnet_standalone import SimpleSegmentationHead
+        pvt_model.seg_head = SimpleSegmentationHead(
+            pvt_model.embed_dim,
+            pvt_model.downsample_factor,
+            pvt_model.remove_cls_token,
+            pvt_model.features_format,
+            pvt_model.feature_size,
+            pvt_model.num_classes,
+            decoder_stride=_ds,
+        )
 
     # Debug : comparer les cles attendues vs fournies
     model_sample = list(pvt_model.state_dict().keys())[:5]
