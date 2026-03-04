@@ -997,6 +997,79 @@ def clean_state_dict(state_dict, prefix_to_strip):
         clean[new_k] = v
     return clean
 
+def smart_load_state_dict(model, ckpt_state_dict, prefixes_to_strip):
+    """Charge le state_dict en adaptant automatiquement les cles.
+
+    Gere les differences de nommage entre versions de timm :
+    - features_only=True peut renommer stages.0 en stages_0
+    - Prefixes variables (net., model., net.model.)
+    """
+    import re
+
+    # Etape 1 : essayer les prefixes dans l ordre
+    best_missing = None
+    best_dict = None
+    best_prefix = None
+
+    # Combinaisons de prefixes a essayer
+    prefix_combos = [
+        prefixes_to_strip,          # ["net.", "model."] -> strip "net." only
+        ["net.model."],             # strip "net.model." together
+        ["net."],                   # strip "net." only
+        [],                         # no stripping
+    ]
+
+    for combo in prefix_combos:
+        d = clean_state_dict(ckpt_state_dict, combo) if combo else dict(ckpt_state_dict)
+        missing, unexpected = model.load_state_dict(d, strict=False)
+        if best_missing is None or len(missing) < len(best_missing):
+            best_missing = missing
+            best_dict = d
+            best_prefix = combo
+        if len(missing) == 0:
+            print(f"  Prefixe parfait: {combo}")
+            return missing, unexpected
+
+    # Etape 2 : construire mapping si beaucoup de cles manquent
+    model_keys = set(model.state_dict().keys())
+    ckpt_keys = set(best_dict.keys())
+
+    if len(best_missing) > len(model_keys) * 0.5:
+        # Trop de cles manquantes - tenter la conversion dot/underscore
+        # timm features_only peut transformer stages.0 en stages_0
+        print(f"  Mapping automatique ({len(best_missing)} cles manquantes sur {len(model_keys)})")
+
+        # Strategie : pour chaque cle du modele, chercher la cle checkpoint correspondante
+        # en normalisant dots et underscores dans les numeros
+        def normalize_key(k):
+            """stages_0.blocks_1 -> stages.0.blocks.1"""
+            return re.sub(r"_(\d+)", r".\1", k)
+
+        model_norm = {normalize_key(k): k for k in model_keys}
+        ckpt_norm = {normalize_key(k): k for k in ckpt_keys}
+
+        remapped = {}
+        matched = 0
+        for norm_k, model_k in model_norm.items():
+            if norm_k in ckpt_norm:
+                ckpt_k = ckpt_norm[norm_k]
+                remapped[model_k] = best_dict[ckpt_k]
+                matched += 1
+
+        if matched > len(best_missing) * 0.5:
+            print(f"  {matched}/{len(model_keys)} cles remappees")
+            missing, unexpected = model.load_state_dict(remapped, strict=False)
+            print(f"  Apres remapping: {len(missing)} manquantes, {len(unexpected)} inattendues")
+            if len(missing) < 5:
+                for m in missing:
+                    print(f"    - {m}")
+            return missing, unexpected
+
+    # Etape 3 : utiliser le meilleur resultat
+    print(f"  Meilleur prefixe: {best_prefix}, {len(best_missing)} manquantes")
+    model.load_state_dict(best_dict, strict=False)
+    return best_missing, []
+
 # ======================================================================
 # Reconstruire le modele selon l architecture
 # ======================================================================
@@ -1095,16 +1168,20 @@ elif has_timm_model or has_seg_head or model_name == "pvtv2":
         use_FPN=False,
     )
 
-    clean_dict = clean_state_dict(state_dict, ["net.", "model."])
+    # Debug : comparer les cles attendues vs fournies
+    model_sample = list(pvt_model.state_dict().keys())[:5]
+    ckpt_sample = list(state_dict.keys())[:5]
+    print(f"  Cles modele (exemples): {model_sample}")
+    print(f"  Cles checkpoint (exemples): {ckpt_sample}")
 
-    missing, unexpected = pvt_model.load_state_dict(
-        clean_dict, strict=False)
+    missing, unexpected = smart_load_state_dict(
+        pvt_model, state_dict, ["net.", "model."])
     if missing:
-        print(f"  Cles manquantes: {len(missing)}")
-        for m in missing[:3]:
+        print(f"  Cles manquantes finales: {len(missing)}")
+        for m in missing[:5]:
             print(f"    - {m}")
     if unexpected:
-        print(f"  Cles inattendues: {len(unexpected)}")
+        print(f"  Cles inattendues finales: {len(unexpected)}")
 
     pvt_model.eval()
     model = pvt_model
