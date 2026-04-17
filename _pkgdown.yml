@@ -1,0 +1,74 @@
+url: https://pobsteta.github.io/opencanopynemeton/
+template:
+  bootstrap: 5
+  bootswatch: flatly
+  bslib:
+    primary: "#2E7D32"
+    success: "#4CAF50"
+
+home:
+  title: "opencanopy - CHM depuis ortho IGN via Open-Canopy"
+  description: >
+    Package R qui adapte les modeles Open-Canopy (UNet, PVTv2 entraines sur
+    SPOT 6-7 a 1.5m) pour fonctionner sur les orthophotos IGN BD ORTHO a 0.20m.
+    Pipeline AOI -> CHM + indices spectraux (NDVI, GNDVI, SAVI, NDWI) + CHM masque.
+  links:
+  - text: Voir sur GitHub
+    href: https://github.com/pobsteta/opencanopynemeton
+  - text: Dataset Open-Canopy (HF)
+    href: https://huggingface.co/datasets/AI4Forest/Open-Canopy
+
+navbar:
+  structure:
+    left:  [intro, reference, news]
+    right: [search, github]
+
+reference:
+- title: "Pipeline complet"
+  desc: >
+    Point d'entree principal : produit CHM + indices + PDF recapitulatif
+    depuis un fichier AOI GeoPackage.
+  contents:
+  - pipeline_aoi_to_chm
+
+- title: "Telechargement de donnees"
+  desc: "Orthophotos IGN (WMS Geoplateforme) et dataset Open-Canopy (Hugging Face)."
+  contents:
+  - starts_with("download_")
+  - starts_with("hf_")
+  - load_aoi
+  - load_ign_ortho
+  - scan_ign_files
+
+- title: "Indices spectraux et analyse"
+  desc: "Calcul d'indices depuis l'IRC, masques, statistiques zonales."
+  contents:
+  - starts_with("compute_")
+  - mask_vegetation
+  - cross_ndvi_chm
+  - zonal_canopy_stats
+  - compute_forest_cover_grid
+  - detect_canopy_loss
+
+- title: "Inference et post-traitement"
+  desc: "Preparation des tuiles, inference Python, reechantillonnage du CHM."
+  contents:
+  - setup_conda_env
+  - setup_python
+  - download_pretrained_model
+  - download_model
+  - download_open_canopy_src
+  - find_checkpoint_name
+  - tile_for_inference
+  - normalize_for_model
+  - run_inference_python
+  - predict_chm_from_ign
+  - resample_ign_to_spot
+  - upsample_chm_to_ign
+  - load_predictions
+  - evaluate_predictions
+
+- title: "Visualisation et export"
+  contents:
+  - starts_with("plot_")
+  - export_to_gpkg

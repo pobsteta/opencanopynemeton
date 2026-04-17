@@ -1,6 +1,14 @@
-# Open-Canopy R — Ortho IGN 0.20m + SPOT 1.5m
+# opencanopy — Ortho IGN 0.20m + modèles Open-Canopy (SPOT 1.5m)
 
-Code R pour estimer la hauteur de canopée à partir des **ortho IGN** (RVB + IRC à 0.20m) en exploitant les modèles pré-entraînés **[Open-Canopy](https://huggingface.co/datasets/AI4Forest/Open-Canopy)** (SPOT 6-7 à 1.5m).
+<!-- badges: start -->
+[![R-CMD-check](https://github.com/pobsteta/opencanopynemeton/actions/workflows/r.yml/badge.svg)](https://github.com/pobsteta/opencanopynemeton/actions/workflows/r.yml)
+[![Version](https://img.shields.io/badge/version-0.1.0-blue.svg?logo=github)](https://github.com/pobsteta/opencanopynemeton)
+[![pkgdown](https://github.com/pobsteta/opencanopynemeton/actions/workflows/pkgdown.yaml/badge.svg)](https://pobsteta.github.io/opencanopynemeton/)
+[![codecov](https://codecov.io/gh/pobsteta/opencanopynemeton/graph/badge.svg)](https://codecov.io/gh/pobsteta/opencanopynemeton)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg?logo=opensourceinitiative)](https://opensource.org/licenses/MIT)
+<!-- badges: end -->
+
+Package R pour estimer la hauteur de canopée à partir des **ortho IGN** (RVB + IRC à 0.20m) en exploitant les modèles pré-entraînés **[Open-Canopy](https://huggingface.co/datasets/AI4Forest/Open-Canopy)** (SPOT 6-7 à 1.5m).
 
 ## Contexte
 

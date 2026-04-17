@@ -2,6 +2,15 @@
 ^.*\.Rproj$
 ^\.git$
 ^\.gitignore$
+^\.github$
+^\.Rprofile$
+^\.Renviron$
 ^data$
 ^outputs$
+^docs$
 ^LICENSE\.md$
+^_pkgdown\.yml$
+^pkgdown$
+^CLAUDE\.md$
+^cran-comments\.md$
+^codecov\.yml$
