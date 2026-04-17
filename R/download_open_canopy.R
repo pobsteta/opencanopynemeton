@@ -1,6 +1,6 @@
 #!/usr/bin/env Rscript
 # ==============================================================================
-# 01_download_open_canopy.R
+# download_open_canopy.R
 # Téléchargement du dataset Open-Canopy depuis Hugging Face
 # + Chargement des données IGN (BD ORTHO® RVB et IRC à 0.20 m)
 #

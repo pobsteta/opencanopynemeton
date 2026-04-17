@@ -303,6 +303,10 @@ class timmNet(nn.Module):
 
         # decoder_stride : si None, utiliser downsample_factor (1 seule couche)
         _ds = decoder_stride if decoder_stride is not None else self.downsample_factor
+        # Si layered output (PVTv2, swin, ...), downsample_factor est une liste
+        # par stage — prendre le dernier (celui effectivement utilise par le head)
+        if isinstance(_ds, (list, tuple)):
+            _ds = _ds[-1]
         self.seg_head = segmentation_head(
             self.embed_dim,
             self.downsample_factor,

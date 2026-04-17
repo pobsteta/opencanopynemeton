@@ -1,6 +1,6 @@
 #!/usr/bin/env Rscript
 # ==============================================================================
-# 02_analyse_open_canopy.R
+# analyse_open_canopy.R
 # Analyse et visualisation :
 #   - Images SPOT 6-7 (Open-Canopy, 1.5m)
 #   - Ortho IGN RVB + IRC (BD ORTHO®, 0.20m)
@@ -166,6 +166,26 @@ compute_savi <- function(irc_raster, L = 0.5) {
   savi <- ((pir - rouge) / (pir + rouge + L)) * (1 + L)
   names(savi) <- "SAVI"
   return(savi)
+}
+
+#' Calculer le NDWI (Normalized Difference Water Index, McFeeters 1996)
+#'
+#' NDWI = (Vert - PIR) / (Vert + PIR)
+#' Valeurs > 0 typiquement = eau ; utile pour masquer rivières/étangs du CHM.
+#'
+#' @param irc_raster SpatRaster IRC IGN (bandes: PIR, Rouge, Vert)
+#' @return SpatRaster du NDWI (valeurs entre -1 et 1)
+compute_ndwi <- function(irc_raster) {
+  pir <- irc_raster[["PIR"]]
+  vert <- irc_raster[["Vert"]]
+
+  ndwi <- (vert - pir) / (vert + pir)
+  names(ndwi) <- "NDWI"
+
+  vals <- values(ndwi, na.rm = TRUE)
+  message(sprintf("NDWI calculé: min=%.3f, max=%.3f, moy=%.3f",
+                   min(vals), max(vals), mean(vals)))
+  return(ndwi)
 }
 
 #' Créer un masque de végétation à partir du NDVI
@@ -461,7 +481,7 @@ if (sys.nframe() == 0) {
 
   if (length(all_images) == 0) {
     message("Aucun fichier image trouvé dans ", DATA_DIR)
-    message("Exécutez d'abord: Rscript R/01_download_open_canopy.R")
+    message("Exécutez d'abord: Rscript R/download_open_canopy.R")
     message("\nDémonstration avec des données simulées...\n")
 
     # --- Simulation IGN IRC + CHM ---

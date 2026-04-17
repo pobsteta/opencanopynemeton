@@ -23,10 +23,10 @@ Le projet **Open-Canopy** fournit des modèles (UNet, PVTv2) entraînés sur ima
 
 ```
 ├── R/
-│   ├── 01_download_open_canopy.R   # Téléchargement HF + chargement IGN
-│   ├── 02_analyse_open_canopy.R    # Analyse, NDVI, visualisation
-│   ├── 03_prediction_open_canopy.R # Inférence modèles + post-traitement
-│   └── 04_pipeline_aoi_to_chm.R   # Pipeline complet AOI → CHM
+│   ├── download_open_canopy.R   # Téléchargement HF + chargement IGN
+│   ├── analyse_open_canopy.R    # Analyse, NDVI, visualisation
+│   ├── prediction_open_canopy.R # Inférence modèles + post-traitement
+│   └── pipeline_aoi_to_chm.R    # Pipeline complet AOI → CHM
 ├── data/
 │   ├── open_canopy/                # Dataset HF (SPOT 1.5m)
 │   ├── ign/                        # Ortho IGN (RVB + IRC, 0.20m)
@@ -86,7 +86,7 @@ use_condaenv("open_canopy", required = TRUE)
 ### 1. Charger les données
 
 ```r
-source("R/01_download_open_canopy.R")
+source("R/download_open_canopy.R")
 
 # --- Ortho IGN (placer les .jp2 dans data/ign/) ---
 irc <- load_ign_ortho("data/ign/ortho_irc.jp2", type = "irc")
@@ -103,7 +103,7 @@ download_open_canopy_subset(split = "test", n_tiles = 5)
 ### 2. Analyser (NDVI, classification, croisement)
 
 ```r
-source("R/02_analyse_open_canopy.R")
+source("R/analyse_open_canopy.R")
 
 # Charger l'IRC et calculer le NDVI
 irc <- load_ign_ortho("data/ign/ortho_irc.jp2", type = "irc")
@@ -128,7 +128,7 @@ chm_stats <- compute_chm_stats(chm)
 ### 3. Prédire la hauteur de canopée
 
 ```r
-source("R/03_prediction_open_canopy.R")
+source("R/prediction_open_canopy.R")
 
 # Configurer l'environnement Python
 setup_conda_env("open_canopy")
@@ -150,7 +150,7 @@ chm_hr <- upsample_chm_to_ign(chm_predicted)  # 1.5m → 0.20m
 ### 4. Pipeline complet AOI → CHM (nouveau)
 
 ```r
-source("R/04_pipeline_aoi_to_chm.R")
+source("R/pipeline_aoi_to_chm.R")
 
 # Lancer le pipeline avec un fichier GeoPackage
 result <- pipeline_aoi_to_chm("data/aoi.gpkg")

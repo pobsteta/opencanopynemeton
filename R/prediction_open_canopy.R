@@ -1,6 +1,6 @@
 #!/usr/bin/env Rscript
 # ==============================================================================
-# 03_prediction_open_canopy.R
+# prediction_open_canopy.R
 # Inférence des modèles Open-Canopy sur images IGN (0.20m)
 # via l'environnement conda open_canopy + reticulate
 #

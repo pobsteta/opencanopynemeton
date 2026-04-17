@@ -25,6 +25,7 @@ __pycache__/
 # Environnement
 .env
 .Renviron
+.Rprofile
 
 # OS
 .DS_Store

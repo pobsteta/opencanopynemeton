@@ -26,7 +26,7 @@ cat("==============================================================\n\n")
 cat(">>> Étape 1 : Vérification des dépendances R\n")
 
 pkgs_required <- c("terra", "sf", "httr2", "jsonlite", "curl", "fs", "reticulate")
-pkgs_optional <- c("hfhub", "ggplot2", "patchwork", "tidyterra")
+# pkgs_optional <- c("hfhub", "ggplot2", "patchwork", "tidyterra")
 
 ok <- TRUE
 for (pkg in pkgs_required) {
@@ -148,7 +148,7 @@ for (mod in modules_core) {
 cat("\n>>> Étape 4 : Test du téléchargement du modèle\n")
 cat(sprintf("  Modèle demandé : %s\n", model_name))
 
-source("R/04_pipeline_aoi_to_chm.R")
+source("R/pipeline_aoi_to_chm.R")
 
 tryCatch({
   model_path <- download_model(model_name)
@@ -198,7 +198,7 @@ tryCatch({
   cat("  - Vérifiez votre token HF : Sys.setenv(HF_TOKEN = 'hf_...')\n")
   cat("  - Vérifiez l'env conda : conda activate open_canopy\n")
   cat("  - Essayez avec un chemin de modèle local :\n")
-  cat(sprintf("      source('R/04_pipeline_aoi_to_chm.R')\n"))
+  cat(sprintf("      source('R/pipeline_aoi_to_chm.R')\n"))
   cat(sprintf("      pipeline_aoi_to_chm('%s', model_path = 'chemin/model.ckpt')\n",
               aoi_path))
 })

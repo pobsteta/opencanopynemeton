@@ -1,6 +1,6 @@
 #!/usr/bin/env Rscript
 # ==============================================================================
-# 04_pipeline_aoi_to_chm.R
+# pipeline_aoi_to_chm.R
 # Pipeline complet : AOI (GeoPackage) → Ortho IGN RVB+IRC → CHM prédit
 #
 # Entrée  : fichier aoi.gpkg (zone d'intérêt, n'importe quel CRS)
@@ -1495,7 +1495,9 @@ pipeline_aoi_to_chm <- function(aoi_path,
                                   open_canopy_src = NULL,
                                   res_m = RES_IGN,
                                   millesime_ortho = MILLESIME_ORTHO,
-                                  millesime_irc = MILLESIME_IRC) {
+                                  millesime_irc = MILLESIME_IRC,
+                                  ndvi_threshold = 0.25,
+                                  ndwi_threshold = 0.20) {
   dir_create(output_dir)
   t0 <- Sys.time()
 
@@ -1583,46 +1585,107 @@ pipeline_aoi_to_chm <- function(aoi_path,
                  gdal = c("COMPRESS=LZW"))
   message("CHM 0.2m: ", chm_hr_path)
 
-  # --- NDVI si IRC disponible ---
+  # --- Indices spectraux depuis IRC ---
   pir   <- ortho$irc[["PIR"]]
   rouge <- ortho$irc[["Rouge"]]
-  ndvi  <- (pir - rouge) / (pir + rouge)
+  vert  <- ortho$irc[["Vert"]]
+
+  # NDVI = (PIR - Rouge) / (PIR + Rouge) — activite vegetative
+  ndvi <- (pir - rouge) / (pir + rouge)
   names(ndvi) <- "NDVI"
   ndvi_path <- file.path(output_dir, "ndvi.tif")
   if (file.exists(ndvi_path)) file.remove(ndvi_path)
-  writeRaster(ndvi, ndvi_path, overwrite = TRUE,
-              gdal = c("COMPRESS=LZW"))
+  writeRaster(ndvi, ndvi_path, overwrite = TRUE, gdal = c("COMPRESS=LZW"))
   message("NDVI:     ", ndvi_path)
 
-  # --- Visualisation récapitulative ---
+  # GNDVI = (PIR - Vert) / (PIR + Vert) — chlorophylle
+  gndvi <- (pir - vert) / (pir + vert)
+  names(gndvi) <- "GNDVI"
+  gndvi_path <- file.path(output_dir, "gndvi.tif")
+  if (file.exists(gndvi_path)) file.remove(gndvi_path)
+  writeRaster(gndvi, gndvi_path, overwrite = TRUE, gdal = c("COMPRESS=LZW"))
+  message("GNDVI:    ", gndvi_path)
+
+  # SAVI = ((PIR-R)/(PIR+R+L))*(1+L) avec L=0.5 — ajuste sol nu
+  L_savi <- 0.5
+  savi <- ((pir - rouge) / (pir + rouge + L_savi)) * (1 + L_savi)
+  names(savi) <- "SAVI"
+  savi_path <- file.path(output_dir, "savi.tif")
+  if (file.exists(savi_path)) file.remove(savi_path)
+  writeRaster(savi, savi_path, overwrite = TRUE, gdal = c("COMPRESS=LZW"))
+  message("SAVI:     ", savi_path)
+
+  # NDWI (McFeeters) = (Vert - PIR) / (Vert + PIR) — detection eau
+  ndwi <- (vert - pir) / (vert + pir)
+  names(ndwi) <- "NDWI"
+  ndwi_path <- file.path(output_dir, "ndwi.tif")
+  if (file.exists(ndwi_path)) file.remove(ndwi_path)
+  writeRaster(ndwi, ndwi_path, overwrite = TRUE, gdal = c("COMPRESS=LZW"))
+  message("NDWI:     ", ndwi_path)
+
+  # --- CHM masque : vegetation uniquement, pas d'eau ---
+  # Aligner NDVI/NDWI sur la grille du CHM 0.20m (disaggregation bilineaire
+  # peut produire un leger decalage de grille vs ortho IRC natif)
+  ndvi_on_chm <- resample(ndvi, chm_hr, method = "near")
+  ndwi_on_chm <- resample(ndwi, chm_hr, method = "near")
+  clean_mask <- (ndvi_on_chm > ndvi_threshold) & (ndwi_on_chm <= ndwi_threshold)
+  names(clean_mask) <- "mask_vegetation"
+
+  chm_veg_path <- file.path(output_dir, "chm_vegetation_0_2m.tif")
+  if (file.exists(chm_veg_path)) file.remove(chm_veg_path)
+  chm_veg <- mask(chm_hr, clean_mask, maskvalues = c(FALSE, NA),
+                  filename = chm_veg_path, overwrite = TRUE,
+                  gdal = c("COMPRESS=LZW"))
+  pct_veg <- sum(values(clean_mask, na.rm = TRUE)) /
+             sum(!is.na(values(clean_mask))) * 100
+  message(sprintf("CHM veg:  %s  (vegetation: %.1f%%, seuils NDVI>%.2f, NDWI<=%.2f)",
+                  chm_veg_path, pct_veg, ndvi_threshold, ndwi_threshold))
+
+  # --- Visualisation récapitulative (3x3, 9 panneaux) ---
   pdf_path <- file.path(output_dir, "resultats_aoi.pdf")
-  pdf(pdf_path, width = 16, height = 12)
+  pdf(pdf_path, width = 18, height = 16)
 
-  par(mfrow = c(2, 2), mar = c(2, 2, 3, 4))
+  par(mfrow = c(3, 3), mar = c(2, 2, 3, 4))
 
-  # RVB
   label_ortho <- if (is.null(ortho$millesime_ortho)) "plus récent" else ortho$millesime_ortho
   label_irc   <- if (is.null(ortho$millesime_irc))   "plus récent" else ortho$millesime_irc
-  plotRGB(ortho$rvb, r = 1, g = 2, b = 3, stretch = "lin",
-          main = sprintf("Ortho RVB IGN 0.20m (millésime: %s)", label_ortho))
 
-  # IRC fausses couleurs
-  plotRGB(ortho$irc, r = 1, g = 2, b = 3, stretch = "lin",
-          main = sprintf("Ortho IRC fausses couleurs 0.20m (millésime: %s)", label_irc))
-
-  # NDVI
-  col_ndvi <- colorRampPalette(
+  # Palettes
+  col_veg <- colorRampPalette(
     c("#d73027", "#fc8d59", "#fee08b", "#ffffbf",
       "#d9ef8b", "#91cf60", "#1a9850", "#006837")
   )(100)
-  plot(ndvi, main = "NDVI (depuis IRC)", col = col_ndvi,
-       range = c(-0.2, 1), plg = list(title = "NDVI"))
-
-  # CHM
+  col_water <- colorRampPalette(
+    c("#8c510a", "#d8b365", "#f6e8c3", "#c7eae5", "#5ab4ac", "#01665e")
+  )(100)
   col_chm <- colorRampPalette(
     c("#f7fcb9", "#addd8e", "#41ab5d", "#006837", "#004529")
   )(100)
-  plot(chm, main = paste("CHM prédit -", model_name),
+
+  # Ligne 1 : ortho brutes + CHM brut
+  plotRGB(ortho$rvb, r = 1, g = 2, b = 3, stretch = "lin",
+          main = sprintf("Ortho RVB 0.20m (%s)", label_ortho))
+  plotRGB(ortho$irc, r = 1, g = 2, b = 3, stretch = "lin",
+          main = sprintf("Ortho IRC 0.20m (%s)", label_irc))
+  plot(chm, main = paste("CHM brut -", model_name),
+       col = col_chm, plg = list(title = "Hauteur (m)"))
+
+  # Ligne 2 : indices de vegetation
+  plot(ndvi, main = "NDVI (activite vegetative)", col = col_veg,
+       range = c(-0.2, 1), plg = list(title = "NDVI"))
+  plot(gndvi, main = "GNDVI (chlorophylle)", col = col_veg,
+       range = c(-0.2, 1), plg = list(title = "GNDVI"))
+  plot(savi, main = "SAVI (ajuste sol, L=0.5)", col = col_veg,
+       range = c(-0.3, 1.5), plg = list(title = "SAVI"))
+
+  # Ligne 3 : NDWI + masque + CHM nettoye
+  plot(ndwi, main = "NDWI (detection eau)", col = col_water,
+       range = c(-1, 1), plg = list(title = "NDWI"))
+  plot(clean_mask, main = sprintf("Masque vegetation (NDVI>%.2f & NDWI<=%.2f)",
+                                   ndvi_threshold, ndwi_threshold),
+       col = c("grey80", "#1a9850"),
+       plg = list(legend = c("exclu", "vegetation")))
+  plot(chm_veg, main = "CHM masque (vegetation uniquement)",
        col = col_chm, plg = list(title = "Hauteur (m)"))
 
   dev.off()
@@ -1643,78 +1706,110 @@ pipeline_aoi_to_chm <- function(aoi_path,
     agg_factor <- max(1, ceiling(max(nrow(chm), ncol(chm)) / max_dim))
     if (agg_factor > 1) {
       message("Sous-échantillonnage x", agg_factor, " pour affichage RStudio")
-      rvb_disp  <- aggregate(ortho$rvb, fact = agg_factor, fun = "mean")
-      irc_disp  <- aggregate(ortho$irc, fact = agg_factor, fun = "mean")
-      ndvi_disp <- aggregate(ndvi,      fact = agg_factor, fun = "mean")
-      chm_disp  <- aggregate(chm,       fact = agg_factor, fun = "mean")
+      agg_mean <- function(r) aggregate(r, fact = agg_factor, fun = "mean")
+      rvb_disp     <- agg_mean(ortho$rvb)
+      irc_disp     <- agg_mean(ortho$irc)
+      ndvi_disp    <- agg_mean(ndvi)
+      gndvi_disp   <- agg_mean(gndvi)
+      savi_disp    <- agg_mean(savi)
+      ndwi_disp    <- agg_mean(ndwi)
+      chm_disp     <- agg_mean(chm)
+      chm_veg_disp <- agg_mean(chm_veg)
     } else {
-      rvb_disp  <- ortho$rvb
-      irc_disp  <- ortho$irc
-      ndvi_disp <- ndvi
-      chm_disp  <- chm
+      rvb_disp     <- ortho$rvb
+      irc_disp     <- ortho$irc
+      ndvi_disp    <- ndvi
+      gndvi_disp   <- gndvi
+      savi_disp    <- savi
+      ndwi_disp    <- ndwi
+      chm_disp     <- chm
+      chm_veg_disp <- chm_veg
     }
 
-    # Panel 1 : Ortho RVB
+    # Palettes communes
+    veg_cols   <- c("#d73027", "#fc8d59", "#fee08b", "#ffffbf",
+                    "#d9ef8b", "#91cf60", "#1a9850", "#006837")
+    water_cols <- c("#8c510a", "#d8b365", "#f6e8c3",
+                    "#c7eae5", "#5ab4ac", "#01665e")
+    chm_cols   <- c("#f7fcb9", "#addd8e", "#41ab5d", "#006837", "#004529")
+
+    base_theme <- theme_minimal() +
+      theme(axis.text = element_blank(),
+            axis.title = element_blank(),
+            axis.ticks = element_blank(),
+            plot.title = element_text(size = 9, face = "bold"))
+
+    # Ligne 1 : orthos + CHM brut
     p_rvb <- ggplot() +
       geom_spatraster_rgb(data = rvb_disp, r = 1, g = 2, b = 3,
                           max_col_value = 255) +
       labs(title = sprintf("Ortho RVB 0.20m (%s)", label_ortho)) +
-      theme_minimal() +
-      theme(axis.text = element_blank(),
-            axis.title = element_blank(),
-            axis.ticks = element_blank(),
-            plot.title = element_text(size = 10, face = "bold"))
+      base_theme
 
-    # Panel 2 : Ortho IRC fausses couleurs
     p_irc <- ggplot() +
       geom_spatraster_rgb(data = irc_disp, r = 1, g = 2, b = 3,
                           max_col_value = 255) +
       labs(title = sprintf("Ortho IRC 0.20m (%s)", label_irc)) +
-      theme_minimal() +
-      theme(axis.text = element_blank(),
-            axis.title = element_blank(),
-            axis.ticks = element_blank(),
-            plot.title = element_text(size = 10, face = "bold"))
+      base_theme
 
-    # Panel 3 : NDVI
-    p_ndvi <- ggplot() +
-      geom_spatraster(data = ndvi_disp) +
-      scale_fill_gradientn(
-        colours = c("#d73027", "#fc8d59", "#fee08b", "#ffffbf",
-                    "#d9ef8b", "#91cf60", "#1a9850", "#006837"),
-        limits = c(-0.2, 1), na.value = "transparent",
-        name = "NDVI"
-      ) +
-      labs(title = "NDVI (depuis IRC)") +
-      theme_minimal() +
-      theme(axis.text = element_blank(),
-            axis.title = element_blank(),
-            axis.ticks = element_blank(),
-            plot.title = element_text(size = 10, face = "bold"))
-
-    # Panel 4 : CHM
     p_chm <- ggplot() +
       geom_spatraster(data = chm_disp) +
-      scale_fill_gradientn(
-        colours = c("#f7fcb9", "#addd8e", "#41ab5d", "#006837", "#004529"),
-        na.value = "transparent",
-        name = "Hauteur (m)"
-      ) +
-      labs(title = paste("CHM", model_name)) +
-      theme_minimal() +
-      theme(axis.text = element_blank(),
-            axis.title = element_blank(),
-            axis.ticks = element_blank(),
-            plot.title = element_text(size = 10, face = "bold"))
+      scale_fill_gradientn(colours = chm_cols, na.value = "transparent",
+                           name = "m") +
+      labs(title = paste("CHM brut -", model_name)) + base_theme
 
-    p_combined <- (p_rvb | p_irc) / (p_ndvi | p_chm) +
+    # Ligne 2 : indices de vegetation
+    p_ndvi <- ggplot() +
+      geom_spatraster(data = ndvi_disp) +
+      scale_fill_gradientn(colours = veg_cols, limits = c(-0.2, 1),
+                           na.value = "transparent", name = "NDVI") +
+      labs(title = "NDVI (activite vegetative)") + base_theme
+
+    p_gndvi <- ggplot() +
+      geom_spatraster(data = gndvi_disp) +
+      scale_fill_gradientn(colours = veg_cols, limits = c(-0.2, 1),
+                           na.value = "transparent", name = "GNDVI") +
+      labs(title = "GNDVI (chlorophylle)") + base_theme
+
+    p_savi <- ggplot() +
+      geom_spatraster(data = savi_disp) +
+      scale_fill_gradientn(colours = veg_cols, limits = c(-0.3, 1.5),
+                           na.value = "transparent", name = "SAVI") +
+      labs(title = "SAVI (ajuste sol, L=0.5)") + base_theme
+
+    # Ligne 3 : NDWI, masque, CHM nettoye
+    p_ndwi <- ggplot() +
+      geom_spatraster(data = ndwi_disp) +
+      scale_fill_gradientn(colours = water_cols, limits = c(-1, 1),
+                           na.value = "transparent", name = "NDWI") +
+      labs(title = "NDWI (detection eau)") + base_theme
+
+    p_mask <- ggplot() +
+      geom_spatraster(data = as.numeric(clean_mask)) +
+      scale_fill_gradientn(colours = c("grey80", "#1a9850"),
+                           limits = c(0, 1), na.value = "transparent",
+                           name = "mask", breaks = c(0, 1),
+                           labels = c("exclu", "vegetation")) +
+      labs(title = sprintf("Masque (NDVI>%.2f & NDWI<=%.2f)",
+                           ndvi_threshold, ndwi_threshold)) + base_theme
+
+    p_chm_veg <- ggplot() +
+      geom_spatraster(data = chm_veg_disp) +
+      scale_fill_gradientn(colours = chm_cols, na.value = "transparent",
+                           name = "m") +
+      labs(title = "CHM masque (vegetation)") + base_theme
+
+    p_combined <- (p_rvb | p_irc | p_chm) /
+                  (p_ndvi | p_gndvi | p_savi) /
+                  (p_ndwi | p_mask | p_chm_veg) +
       plot_annotation(
-        title = "Pipeline Open-Canopy : ortho IGN \u2192 CHM",
-        subtitle = sprintf("AOI: %s | CHM: min=%.1fm, max=%.1fm, moy=%.1fm",
+        title = "Pipeline Open-Canopy : ortho IGN \u2192 indices + CHM",
+        subtitle = sprintf("AOI: %s | CHM brut: min=%.1fm, max=%.1fm, moy=%.1fm | Vegetation: %.1f%%",
                            basename(aoi_path),
                            min(values(chm, na.rm = TRUE)),
                            max(values(chm, na.rm = TRUE)),
-                           mean(values(chm, na.rm = TRUE))),
+                           mean(values(chm, na.rm = TRUE)),
+                           pct_veg),
         theme = theme(
           plot.title = element_text(size = 14, face = "bold"),
           plot.subtitle = element_text(size = 10, color = "grey40")
@@ -1745,11 +1840,16 @@ pipeline_aoi_to_chm <- function(aoi_path,
     millesime_irc   = ortho$millesime_irc,
     layer_ortho     = ortho$layer_ortho,
     layer_irc       = ortho$layer_irc,
-    ndvi      = ndvi,
-    chm_1_5m  = chm,
-    chm_0_2m  = chm_hr,
-    plot      = p_combined,
-    output_dir = output_dir
+    ndvi            = ndvi,
+    gndvi           = gndvi,
+    savi            = savi,
+    ndwi            = ndwi,
+    mask_vegetation = clean_mask,
+    chm_1_5m        = chm,
+    chm_0_2m        = chm_hr,
+    chm_vegetation  = chm_veg,
+    plot            = p_combined,
+    output_dir      = output_dir
   ))
 }
 
@@ -1768,7 +1868,7 @@ if (sys.nframe() == 0) {
     message("\nUtilisation:")
     message('  # Option 1 : placer votre fichier aoi.gpkg dans data/')
     message('  # Option 2 : appeler directement la fonction :')
-    message('  source("R/04_pipeline_aoi_to_chm.R")')
+    message('  source("R/pipeline_aoi_to_chm.R")')
     message('  result <- pipeline_aoi_to_chm("chemin/vers/aoi.gpkg")')
     message("")
     message("  # Avec un checkpoint local :")
