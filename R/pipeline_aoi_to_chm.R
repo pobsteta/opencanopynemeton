@@ -361,7 +361,7 @@ download_ortho_for_aoi <- function(aoi, output_dir, res_m = RES_IGN,
 
   # Nettoyer les tuiles temporaires
   tile_files <- dir_ls(output_dir, glob = "*_tile_*.tif")
-  if (length(tile_files) > 0) file_delete(tile_files)
+  if (length(tile_files) > 0) fs::file_delete(tile_files)
 
   return(list(rvb = rvb, irc = irc,
               rvb_path = rvb_path, irc_path = irc_path,
