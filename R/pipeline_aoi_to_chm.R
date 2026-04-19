@@ -397,6 +397,76 @@ resample_to_spot <- function(ign_raster) {
 # 4. Inférence Open-Canopy via Python (reticulate)
 # ==============================================================================
 
+#' Locate the open_canopy conda env Python executable.
+#'
+#' Tries, in order:
+#' 1. `RETICULATE_PYTHON` env var if it points to a `…/open_canopy/bin/python`
+#' 2. `reticulate::py_config()$python` if already bound to open_canopy
+#' 3. Canonical conda install paths (miniforge3, miniconda3, anaconda3, mambaforge)
+#' 4. `CONDA_PREFIX` when it looks like the base install (→ `envs/open_canopy`)
+#' 5. `reticulate::conda_list()` — last resort, known to return garbage on
+#'    some boxes (single pseudo-entry "envs").
+#'
+#' @return Character path to a python executable, or NA if none is found.
+#' @noRd
+.find_open_canopy_python <- function() {
+  is_win <- .Platform$OS.type == "windows"
+  py_leaf <- if (is_win) file.path("Scripts", "python.exe") else file.path("bin", "python")
+
+  looks_like_open_canopy <- function(path) {
+    nzchar(path) && file.exists(path) &&
+      grepl(paste0(.Platform$file.sep, CONDA_ENV, .Platform$file.sep), path, fixed = TRUE)
+  }
+
+  # 1. User override via RETICULATE_PYTHON
+  env_py <- Sys.getenv("RETICULATE_PYTHON", "")
+  if (looks_like_open_canopy(env_py)) return(env_py)
+
+  # 2. Already bound (e.g. user did use_python() earlier)
+  current <- tryCatch(reticulate::py_config()$python, error = function(e) "")
+  if (looks_like_open_canopy(current)) return(current)
+
+  # 3. Canonical conda install paths
+  home <- Sys.getenv("HOME", unset = path.expand("~"))
+  candidate_roots <- c(
+    Sys.getenv("CONDA_PREFIX_1", ""),  # base when in sub-env
+    Sys.getenv("MAMBA_ROOT_PREFIX", ""),
+    file.path(home, "miniforge3"),
+    file.path(home, "mambaforge"),
+    file.path(home, "miniconda3"),
+    file.path(home, "anaconda3"),
+    file.path(home, ".conda"),
+    "/opt/miniforge3", "/opt/miniconda3", "/opt/anaconda3",
+    "/usr/local/miniforge3", "/usr/local/miniconda3"
+  )
+  for (root in candidate_roots) {
+    if (!nzchar(root)) next
+    cand <- file.path(root, "envs", CONDA_ENV, py_leaf)
+    if (file.exists(cand)) return(cand)
+  }
+
+  # 4. CONDA_PREFIX pointing at the base install
+  cp <- Sys.getenv("CONDA_PREFIX", "")
+  if (nzchar(cp)) {
+    cand <- file.path(cp, "envs", CONDA_ENV, py_leaf)
+    if (file.exists(cand)) return(cand)
+    # Maybe CONDA_PREFIX already points at open_canopy
+    cand2 <- file.path(cp, py_leaf)
+    if (looks_like_open_canopy(cand2)) return(cand2)
+  }
+
+  # 5. conda_list() — unreliable on some systems
+  envs <- tryCatch(reticulate::conda_list(), error = function(e) NULL)
+  if (!is.null(envs) && nrow(envs) > 0) {
+    idx <- which(envs$name == CONDA_ENV)
+    if (length(idx) == 1L && file.exists(envs$python[idx])) {
+      return(envs$python[idx])
+    }
+  }
+
+  NA_character_
+}
+
 #' Configurer l'environnement Python
 #'
 #' Vérifie que les modules Python nécessaires sont disponibles.
@@ -405,33 +475,42 @@ resample_to_spot <- function(ign_raster) {
 setup_python <- function() {
   library(reticulate)
 
-  # Vérifier si Python est déjà configuré (ex: lancé depuis conda activate)
-  py_ok <- tryCatch(nzchar(py_config()$python), error = function(e) FALSE)
+  target <- .find_open_canopy_python()
+  already_bound <- tryCatch(nzchar(py_config()$python), error = function(e) FALSE)
+  current <- if (already_bound) py_config()$python else ""
 
-  if (!py_ok) {
-    # Chercher l'env conda par nom (Miniforge, Miniconda, Anaconda)
-    conda_envs <- tryCatch(conda_list(), error = function(e) data.frame())
-    if (nrow(conda_envs) > 0) {
-      match_idx <- grep(CONDA_ENV, conda_envs$name, ignore.case = TRUE)
-      if (length(match_idx) > 0) {
-        use_python(conda_envs$python[match_idx[1]], required = TRUE)
-        message("  Env conda détecté: ", conda_envs$name[match_idx[1]])
-      }
+  if (!is.na(target)) {
+    # Found a valid open_canopy python. Bind reticulate to it if not
+    # already done — reticulate cannot switch once initialized, so if
+    # the user already bound a *different* Python we abort with a
+    # clear message instead of silently falling back.
+    if (already_bound && !identical(normalizePath(current, mustWork = FALSE),
+                                    normalizePath(target,  mustWork = FALSE))) {
+      stop(
+        "reticulate is already bound to a different Python:\n",
+        "  current: ", current, "\n",
+        "  target : ", target, "\n",
+        "Restart your R session with:\n",
+        "  Sys.setenv(RETICULATE_PYTHON = \"", target, "\")\n",
+        "before loading any package that uses reticulate, or add\n",
+        "RETICULATE_PYTHON=", target, "\n",
+        "to your ~/.Renviron.",
+        call. = FALSE
+      )
     }
-    # Fallback : CONDA_PREFIX
-    if (!tryCatch(nzchar(py_config()$python), error = function(e) FALSE)) {
-      conda_prefix <- Sys.getenv("CONDA_PREFIX", "")
-      if (nzchar(conda_prefix)) {
-        py_path <- if (.Platform$OS.type == "windows") {
-          file.path(conda_prefix, "python.exe")
-        } else {
-          file.path(conda_prefix, "bin", "python")
-        }
-        if (file.exists(py_path)) {
-          use_python(py_path, required = TRUE)
-          message("  Python (CONDA_PREFIX): ", conda_prefix)
-        }
-      }
+    if (!already_bound) {
+      use_python(target, required = TRUE)
+    }
+    message("  Env conda '", CONDA_ENV, "' détecté: ", target)
+  } else {
+    # No open_canopy env found via any method. Fall through to whatever
+    # reticulate picked (if anything); the module checks below will
+    # report what's missing. Report clearly what was tried.
+    message("  AVERTISSEMENT: env conda '", CONDA_ENV,
+            "' introuvable via RETICULATE_PYTHON, chemins canoniques ",
+            "(miniforge3/miniconda3/anaconda3/mambaforge) ou conda_list().")
+    if (already_bound) {
+      message("  Python actuellement utilisé : ", current)
     }
   }
 
