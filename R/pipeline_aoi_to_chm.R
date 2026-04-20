@@ -195,7 +195,8 @@ download_wms_tile <- function(bbox, layer, res_m = RES_IGN, dest_file) {
 #' @param prefix Préfixe pour les fichiers
 #' @return SpatRaster mosaïqué
 download_ign_tiled <- function(bbox, layer, res_m = RES_IGN,
-                                output_dir, prefix = "ortho") {
+                                output_dir, prefix = "ortho",
+                                progress_callback = NULL) {
   xmin <- bbox[1]; ymin <- bbox[2]; xmax <- bbox[3]; ymax <- bbox[4]
 
   # Taille max d'une tuile WMS en mètres
@@ -207,6 +208,10 @@ download_ign_tiled <- function(bbox, layer, res_m = RES_IGN,
 
   n_tiles <- length(x_starts) * length(y_starts)
   message(sprintf("Téléchargement %s: %d tuile(s) WMS...", prefix, n_tiles))
+  if (is.function(progress_callback)) {
+    progress_callback(list(type = "tile_phase_start",
+                           prefix = prefix, n_tiles = n_tiles))
+  }
 
   tile_rasters <- list()
   idx <- 1
@@ -225,6 +230,11 @@ download_ign_tiled <- function(bbox, layer, res_m = RES_IGN,
 
       message(sprintf("  Tuile %d/%d [%.0f,%.0f - %.0f,%.0f]...",
                        idx, n_tiles, x0, y0, x1, y1))
+      if (is.function(progress_callback)) {
+        progress_callback(list(type = "tile", prefix = prefix,
+                               idx = idx, n_tiles = n_tiles,
+                               bbox = tile_bbox))
+      }
 
       r <- download_wms_tile(tile_bbox, layer, res_m, tile_file)
       if (!is.null(r)) {
@@ -259,7 +269,8 @@ download_ign_tiled <- function(bbox, layer, res_m = RES_IGN,
 #' @return Liste avec rvb, irc (SpatRaster) et millésimes utilisés
 download_ortho_for_aoi <- function(aoi, output_dir, res_m = RES_IGN,
                                     millesime_ortho = MILLESIME_ORTHO,
-                                    millesime_irc = MILLESIME_IRC) {
+                                    millesime_irc = MILLESIME_IRC,
+                                    progress_callback = NULL) {
   dir_create(output_dir)
 
   # Résoudre les couches WMS selon le millésime
@@ -307,7 +318,8 @@ download_ortho_for_aoi <- function(aoi, output_dir, res_m = RES_IGN,
   message("\n--- Ortho RVB ---")
   rvb <- tryCatch(
     download_ign_tiled(bbox, layer = layer_ortho, res_m = res_m,
-                       output_dir = output_dir, prefix = "rvb"),
+                       output_dir = output_dir, prefix = "rvb",
+                       progress_callback = progress_callback),
     error = function(e) {
       if (!is.null(millesime_ortho)) {
         message(sprintf("  Couche %s indisponible, fallback sur %s",
@@ -315,7 +327,8 @@ download_ortho_for_aoi <- function(aoi, output_dir, res_m = RES_IGN,
         layer_ortho <<- IGN_LAYER_ORTHO
         label_ortho <<- "plus récent (fallback)"
         download_ign_tiled(bbox, layer = IGN_LAYER_ORTHO, res_m = res_m,
-                           output_dir = output_dir, prefix = "rvb")
+                           output_dir = output_dir, prefix = "rvb",
+                           progress_callback = progress_callback)
       } else stop(e)
     }
   )
@@ -325,7 +338,8 @@ download_ortho_for_aoi <- function(aoi, output_dir, res_m = RES_IGN,
   message("\n--- Ortho IRC ---")
   irc <- tryCatch(
     download_ign_tiled(bbox, layer = layer_irc, res_m = res_m,
-                       output_dir = output_dir, prefix = "irc"),
+                       output_dir = output_dir, prefix = "irc",
+                       progress_callback = progress_callback),
     error = function(e) {
       if (!is.null(millesime_irc)) {
         message(sprintf("  Couche %s indisponible, fallback sur %s",
@@ -333,7 +347,8 @@ download_ortho_for_aoi <- function(aoi, output_dir, res_m = RES_IGN,
         layer_irc <<- IGN_LAYER_IRC
         label_irc <<- "plus récent (fallback)"
         download_ign_tiled(bbox, layer = IGN_LAYER_IRC, res_m = res_m,
-                           output_dir = output_dir, prefix = "irc")
+                           output_dir = output_dir, prefix = "irc",
+                           progress_callback = progress_callback)
       } else stop(e)
     }
   )
@@ -1591,7 +1606,8 @@ pipeline_aoi_to_chm <- function(aoi_path,
                                   millesime_ortho = MILLESIME_ORTHO,
                                   millesime_irc = MILLESIME_IRC,
                                   ndvi_threshold = 0.25,
-                                  ndwi_threshold = 0.20) {
+                                  ndwi_threshold = 0.20,
+                                  progress_callback = NULL) {
   dir_create(output_dir)
   t0 <- Sys.time()
 
@@ -1614,7 +1630,8 @@ pipeline_aoi_to_chm <- function(aoi_path,
   message("\n>>> ÉTAPE 2/5 : Téléchargement des ortho IGN (RVB + IRC)")
   ortho <- download_ortho_for_aoi(aoi, output_dir = output_dir, res_m = res_m,
                                    millesime_ortho = millesime_ortho,
-                                   millesime_irc = millesime_irc)
+                                   millesime_irc = millesime_irc,
+                                   progress_callback = progress_callback)
 
   # --- Étape 3 : Configurer Python ---
   message("\n>>> ÉTAPE 3/5 : Configuration Python + téléchargement modèle")
