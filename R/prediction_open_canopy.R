@@ -90,9 +90,11 @@ find_checkpoint_name <- function(repo_id = "AI4Forest/Open-Canopy",
 
 #' Télécharger les modèles pré-entraînés depuis Hugging Face
 #'
-#' Utilise le package R hfhub (natif, sans Python) pour télécharger
-#' le fichier checkpoint. Fallback sur Python huggingface_hub si hfhub
-#' n'est pas installé.
+#' Pour l'étape téléchargement uniquement, utilise le package R
+#' hfhub (sans passer par le sous-module Python huggingface_hub).
+#' Fallback sur huggingface_hub Python si hfhub n'est pas
+#' installé. L'inférence qui suit nécessite toujours Python
+#' (torch, rasterio, smp, timm).
 #'
 #' @param model_name "unet" ou "pvtv2"
 #' @return Chemin local du modèle

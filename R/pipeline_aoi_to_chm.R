@@ -470,8 +470,13 @@ resample_to_spot <- function(ign_raster) {
 #' Configurer l'environnement Python
 #'
 #' Vérifie que les modules Python nécessaires sont disponibles.
-#' Note : huggingface_hub Python n'est plus requis si le package R hfhub
-#' est installé (méthode préférée pour le téléchargement des modèles).
+#' Python (torch, rasterio, segmentation_models_pytorch, timm,
+#' numpy) est TOUJOURS requis pour l'inférence — c'est là que
+#' tourne le modèle PVTv2/UNet. Le package R `hfhub` remplace
+#' seulement le sous-module Python `huggingface_hub` pour
+#' l'étape de téléchargement du checkpoint, ce qui fait une
+#' dépendance Python en moins mais ne dispense jamais d'une
+#' installation Python complète.
 setup_python <- function() {
   library(reticulate)
 
@@ -514,10 +519,13 @@ setup_python <- function() {
     }
   }
 
-  # Modules Python essentiels (inférence)
+  # Modules Python essentiels pour l'inférence (toujours requis).
+  # Le modèle PVTv2/UNet tourne via reticulate ; ces modules ne
+  # peuvent PAS être remplacés par des équivalents R.
   modules_core <- c("torch", "numpy", "rasterio",
                      "segmentation_models_pytorch", "timm")
-  # huggingface_hub Python est optionnel si hfhub R est disponible
+  # Le sous-module Python `huggingface_hub` ne sert qu'au download
+  # du checkpoint. `hfhub` R fait la même chose sans ce sous-module.
   has_hfhub_r <- requireNamespace("hfhub", quietly = TRUE)
 
   ok <- TRUE
@@ -527,9 +535,11 @@ setup_python <- function() {
     if (!avail) ok <- FALSE
   }
 
-  # Vérifier huggingface_hub Python seulement si hfhub R n'est pas dispo
+  # huggingface_hub Python est requis pour le download du modèle
+  # SAUF si le package R hfhub est installé (remplacement pour le
+  # seul téléchargement, pas pour l'inférence).
   if (has_hfhub_r) {
-    message("  hfhub (R natif): OK (téléchargement HF sans Python)")
+    message("  Téléchargement HF : hfhub (R) OK — remplace le sous-module Python huggingface_hub.")
   } else {
     hf_avail <- py_module_available("huggingface_hub")
     message(sprintf("  Python huggingface_hub: %s",
@@ -542,10 +552,13 @@ setup_python <- function() {
     if (!has_hfhub_r) {
       pip_cmd <- paste0(pip_cmd, " huggingface_hub")
     }
-    stop("Modules Python manquants. Installez-les dans l'env '", CONDA_ENV, "':\n",
+    stop("Modules Python manquants pour l'inf\u00e9rence. ",
+         "Installez-les dans l'env '", CONDA_ENV, "' :\n",
          "  conda activate ", CONDA_ENV, "\n", pip_cmd,
-         "\n\nOu installez le package R hfhub pour éviter la dépendance Python huggingface_hub :\n",
-         "  install.packages('hfhub')")
+         "\n\nAstuce : `install.packages('hfhub')` c\u00f4t\u00e9 R permet de sauter ",
+         "la d\u00e9pendance Python huggingface_hub (uniquement pour le ",
+         "t\u00e9l\u00e9chargement du mod\u00e8le) ; torch / rasterio / smp / timm ",
+         "restent indispensables pour faire tourner l'inf\u00e9rence.")
   }
 }
 
@@ -648,9 +661,11 @@ find_checkpoint_name <- function(repo_id = HF_REPO_ID,
 
 #' Télécharger le modèle pré-entraîné depuis Hugging Face
 #'
-#' Utilise le package R hfhub (natif, sans Python) pour télécharger
-#' le fichier checkpoint. Fallback sur Python huggingface_hub si hfhub
-#' n'est pas installé.
+#' Pour l'étape téléchargement uniquement, utilise le package R
+#' hfhub (sans passer par le sous-module Python huggingface_hub).
+#' Fallback sur huggingface_hub Python si hfhub n'est pas
+#' installé. L'inférence qui suit nécessite toujours Python
+#' (torch, rasterio, smp, timm).
 #'
 #' @param model_name "unet" ou "pvtv2"
 #' @return Chemin local du modèle
