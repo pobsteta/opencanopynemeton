@@ -248,12 +248,14 @@ download_ign_tiled <- function(bbox, layer, res_m = RES_IGN,
     stop("Aucune tuile WMS téléchargée avec succès.")
   }
 
-  # Mosaïquer si plusieurs tuiles
+  # Mosaïquer si plusieurs tuiles. Qualifier terra::merge et stripper
+  # les noms éventuels pour forcer le matching positionnel (cf. le
+  # même pattern corrigé dans run_inference()).
   if (length(tile_rasters) == 1) {
     mosaic <- tile_rasters[[1]]
   } else {
     message("Mosaïquage de ", length(tile_rasters), " tuiles...")
-    mosaic <- do.call(merge, tile_rasters)
+    mosaic <- do.call(terra::merge, unname(tile_rasters))
   }
 
   return(mosaic)
@@ -1580,12 +1582,16 @@ run_inference <- function(rvb, irc, model_path, model_name = "pvtv2",
     stop("Aucune prédiction réussie.")
   }
 
-  # 5. Mosaïquer
+  # 5. Mosaïquer. `predictions` est nommé par tuile ; do.call(merge, …)
+  # sans dénommer tombe sur base::merge faute de matcher `x`, d'où
+  # "l'argument x est manquant, avec aucune valeur par défaut" quand
+  # on a > 1 tuile. Passer explicitement par terra::merge en stripant
+  # les noms pour forcer le matching positionnel.
   if (length(predictions) == 1) {
     chm <- predictions[[1]]
   } else {
     message("Mosaïquage des prédictions...")
-    chm <- do.call(merge, predictions)
+    chm <- do.call(terra::merge, unname(predictions))
   }
 
   names(chm) <- "chm_predicted"
