@@ -1541,7 +1541,8 @@ combine_rvb_irc <- function(rvb, irc) {
 #' @param tile_size Taille des tuiles en mètres
 #' @return SpatRaster CHM prédit
 run_inference <- function(rvb, irc, model_path, model_name = "pvtv2",
-                           tile_size = 1000, open_canopy_src = NULL) {
+                           tile_size = 1000, open_canopy_src = NULL,
+                           progress_callback = NULL) {
   message("\n=== Inférence Open-Canopy ===")
 
   # 1. Combiner RVB + PIR en 4 bandes
@@ -1552,12 +1553,23 @@ run_inference <- function(rvb, irc, model_path, model_name = "pvtv2",
 
   # 3. Découper en tuiles
   tiles <- make_inference_tiles(r_1_5m, tile_size = tile_size)
+  if (is.function(progress_callback)) {
+    progress_callback(list(type = "inference_phase_start",
+                           n_tiles = length(tiles),
+                           model = model_name))
+  }
 
   # 4. Prédire chaque tuile
   predictions <- list()
   for (i in seq_along(tiles)) {
     tile_name <- names(tiles)[i]
     message(sprintf("  Inférence tuile %d/%d: %s", i, length(tiles), tile_name))
+    if (is.function(progress_callback)) {
+      progress_callback(list(type = "inference_tile",
+                             idx = i, n_tiles = length(tiles),
+                             model = model_name,
+                             tile_name = tile_name))
+    }
     pred <- predict_tile(tiles[[i]], model_path, model_name, open_canopy_src)
     if (!is.null(pred)) {
       predictions[[tile_name]] <- pred
@@ -1622,12 +1634,22 @@ pipeline_aoi_to_chm <- function(aoi_path,
   message("#  Pipeline Open-Canopy : AOI → Ortho IGN → CHM prédit       #")
   message("##############################################################\n")
 
+  # Helper: notify outer callback of a phase boundary. Kept inline
+  # so a NULL callback is a no-op with zero overhead.
+  emit_phase <- function(step, total = 5L, model = NULL) {
+    if (!is.function(progress_callback)) return(invisible())
+    progress_callback(list(type = "phase", step = step, total = total,
+                           model = model))
+  }
+
   # --- Étape 1 : Charger l'AOI ---
   message(">>> ÉTAPE 1/5 : Chargement de l'AOI")
+  emit_phase("load_aoi")
   aoi <- load_aoi(aoi_path)
 
   # --- Étape 2 : Télécharger les ortho IGN ---
   message("\n>>> ÉTAPE 2/5 : Téléchargement des ortho IGN (RVB + IRC)")
+  emit_phase("download_ortho")
   ortho <- download_ortho_for_aoi(aoi, output_dir = output_dir, res_m = res_m,
                                    millesime_ortho = millesime_ortho,
                                    millesime_irc = millesime_irc,
@@ -1635,8 +1657,10 @@ pipeline_aoi_to_chm <- function(aoi_path,
 
   # --- Étape 3 : Configurer Python ---
   message("\n>>> ÉTAPE 3/5 : Configuration Python + téléchargement modèle")
+  emit_phase("setup_python")
   setup_python()
   if (is.null(model_path)) {
+    emit_phase("download_model", model = model_name)
     model_path <- download_model(model_name)
   } else {
     message("Utilisation du modèle local: ", model_path)
@@ -1647,6 +1671,7 @@ pipeline_aoi_to_chm <- function(aoi_path,
 
   # --- Étape 4 : Inférence ---
   message("\n>>> ÉTAPE 4/5 : Inférence du modèle ", model_name)
+  emit_phase("inference", model = model_name)
 
   # Auto-détecter ou télécharger le code source Open-Canopy (pour PVTv2)
   if (is.null(open_canopy_src) && model_name == "pvtv2") {
@@ -1674,10 +1699,12 @@ pipeline_aoi_to_chm <- function(aoi_path,
 
   # Combiner RVB + IRC (PIR) en 4 bandes, puis inférence
   chm <- run_inference(ortho$rvb, ortho$irc, model_path, model_name,
-                        open_canopy_src = open_canopy_src)
+                        open_canopy_src = open_canopy_src,
+                        progress_callback = progress_callback)
 
   # --- Étape 5 : Export ---
   message("\n>>> ÉTAPE 5/5 : Export des résultats")
+  emit_phase("export")
 
   # CHM à la résolution du modèle (1.5m)
   chm_path <- file.path(output_dir, "chm_predicted_1_5m.tif")
