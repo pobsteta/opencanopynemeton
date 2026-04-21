@@ -376,8 +376,14 @@ download_ortho_for_aoi <- function(aoi, output_dir, res_m = RES_IGN,
   message(sprintf("\nRVB sauvegardé: %s (%d x %d px)", rvb_path, ncol(rvb), nrow(rvb)))
   message(sprintf("IRC sauvegardé: %s (%d x %d px)", irc_path, ncol(irc), nrow(irc)))
 
-  # Nettoyer les tuiles temporaires
-  tile_files <- dir_ls(output_dir, glob = "*_tile_*.tif")
+  # Nettoyer les tuiles temporaires (et leurs sidecars GDAL :
+  # .tif.aux.xml cache stats terra, .tif.ovr éventuelles pyramides).
+  # On passe par fs::dir_ls avec un regexp pour tout attraper en un
+  # seul appel.
+  tile_files <- dir_ls(
+    output_dir,
+    regexp = "_tile_[0-9]+\\.tif(\\.aux\\.xml|\\.ovr)?$"
+  )
   if (length(tile_files) > 0) fs::file_delete(tile_files)
 
   return(list(rvb = rvb, irc = irc,
