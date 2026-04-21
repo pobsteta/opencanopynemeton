@@ -1,6 +1,6 @@
 Package: opencanopy
 Title: Open-Canopy - Canopy Height Estimation from IGN Ortho + SPOT Models
-Version: 0.1.0
+Version: 0.1.1
 Authors@R:
     person("Pascal", "Obstetar", , "pascal.obstetar@gmail.com", role = c("aut", "cre"))
 Description: Interface R pour le dataset Open-Canopy de AI4Forest. Open-Canopy
