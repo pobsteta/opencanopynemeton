@@ -127,12 +127,17 @@ load_aoi <- function(gpkg_path, layer = NULL) {
 
 #' Télécharger une tuile WMS IGN
 #'
+#' Effectue des tentatives répétées en cas d'erreurs serveur transitoires
+#' (HTTP 5xx, timeouts), avec backoff exponentiel.
+#'
 #' @param bbox c(xmin, ymin, xmax, ymax) en Lambert-93
 #' @param layer Couche WMS
 #' @param res_m Résolution en mètres
 #' @param dest_file Fichier de sortie
+#' @param max_attempts Nombre maximal de tentatives en cas d'échec transitoire
 #' @return SpatRaster ou NULL si échec
-download_wms_tile <- function(bbox, layer, res_m = RES_IGN, dest_file) {
+download_wms_tile <- function(bbox, layer, res_m = RES_IGN, dest_file,
+                              max_attempts = 4) {
   xmin <- bbox[1]; ymin <- bbox[2]; xmax <- bbox[3]; ymax <- bbox[4]
 
   width  <- round((xmax - xmin) / res_m)
@@ -151,37 +156,56 @@ download_wms_tile <- function(bbox, layer, res_m = RES_IGN, dest_file) {
     "&STYLES="
   )
 
-  tryCatch({
-    # Télécharger dans un fichier temporaire
+  # Erreur transitoire ? (HTTP 5xx, timeouts, resets) → on retente.
+  is_transient <- function(msg) {
+    grepl("50[234]|timed? ?out|timeout|reset|temporar|operation was aborted",
+          msg, ignore.case = TRUE)
+  }
+
+  last_err <- NULL
+  for (attempt in seq_len(max_attempts)) {
     tmp_file <- tempfile(fileext = ".tif")
-    curl_download(url = wms_url, destfile = tmp_file, quiet = TRUE)
+    res <- tryCatch({
+      curl_download(url = wms_url, destfile = tmp_file, quiet = TRUE)
 
-    # Vérifier que c'est bien un raster (pas un XML d'erreur)
-    r <- rast(tmp_file)
+      # Vérifier que c'est bien un raster (pas un XML d'erreur)
+      r <- rast(tmp_file)
 
-    # Assigner le CRS et l'emprise si nécessaire
-    needs_fix <- FALSE
-    if (is.na(crs(r)) || crs(r) == "") {
-      crs(r) <- "EPSG:2154"
-      needs_fix <- TRUE
+      # Assigner le CRS si nécessaire
+      if (is.na(crs(r)) || crs(r) == "") {
+        crs(r) <- "EPSG:2154"
+      }
+
+      # Forcer l'emprise correcte
+      ext(r) <- ext(xmin, xmax, ymin, ymax)
+
+      # Écrire le fichier final (depuis le temp, pas de conflit)
+      writeRaster(r, dest_file, overwrite = TRUE)
+
+      # Libérer la source temp et nettoyer
+      r <- rast(dest_file)
+      unlink(tmp_file)
+      list(ok = TRUE, raster = r)
+    }, error = function(e) {
+      unlink(tmp_file)
+      list(ok = FALSE, message = conditionMessage(e))
+    })
+
+    if (isTRUE(res$ok)) return(res$raster)
+
+    last_err <- res$message
+    if (attempt < max_attempts && is_transient(last_err)) {
+      backoff <- 2 ^ (attempt - 1)  # 1s, 2s, 4s, ...
+      message(sprintf("    WMS échec transitoire (tentative %d/%d): %s — nouvel essai dans %ds...",
+                      attempt, max_attempts, last_err, backoff))
+      Sys.sleep(backoff)
+    } else {
+      break
     }
+  }
 
-    # Forcer l'emprise correcte
-    ext(r) <- ext(xmin, xmax, ymin, ymax)
-
-    # Écrire le fichier final (depuis le temp, pas de conflit)
-    writeRaster(r, dest_file, overwrite = TRUE)
-
-    # Libérer la source temp et nettoyer
-    r <- rast(dest_file)
-    unlink(tmp_file)
-
-    return(r)
-  }, error = function(e) {
-    unlink(tmp_file)
-    warning("Échec WMS: ", e$message)
-    return(NULL)
-  })
+  warning("Échec WMS: ", last_err)
+  return(NULL)
 }
 
 #' Télécharger une ortho IGN complète pour une emprise (avec tuilage automatique)
@@ -215,6 +239,7 @@ download_ign_tiled <- function(bbox, layer, res_m = RES_IGN,
 
   tile_rasters <- list()
   idx <- 1
+  n_attempted <- 0
 
   for (x0 in x_starts) {
     for (y0 in y_starts) {
@@ -236,6 +261,7 @@ download_ign_tiled <- function(bbox, layer, res_m = RES_IGN,
                                bbox = tile_bbox))
       }
 
+      n_attempted <- n_attempted + 1
       r <- download_wms_tile(tile_bbox, layer, res_m, tile_file)
       if (!is.null(r)) {
         tile_rasters[[idx]] <- r
@@ -244,8 +270,20 @@ download_ign_tiled <- function(bbox, layer, res_m = RES_IGN,
     }
   }
 
+  # Compacter pour éliminer les trous laissés par les tuiles en échec
+  # (sinon terra::merge plante avec "[sprc] list element is a: NULL").
+  tile_rasters <- Filter(Negate(is.null), tile_rasters)
+
   if (length(tile_rasters) == 0) {
-    stop("Aucune tuile WMS téléchargée avec succès.")
+    stop("Aucune tuile WMS téléchargée avec succès ",
+         "(serveur IGN injoignable ? réessayez plus tard).")
+  }
+
+  n_failed <- n_attempted - length(tile_rasters)
+  if (n_failed > 0) {
+    warning(sprintf("%d/%d tuile(s) WMS en échec : la mosaïque sera incomplète. ",
+                    n_failed, n_attempted),
+            "Relancez le pipeline pour retenter ces zones.")
   }
 
   # Mosaïquer si plusieurs tuiles. Qualifier terra::merge et stripper
