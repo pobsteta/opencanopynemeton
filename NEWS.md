@@ -1,3 +1,22 @@
+# opencanopy 0.1.2
+
+Patch release ciblée sur la robustesse des téléchargements WMS IGN.
+
+### Bug Fixes
+
+* **WMS IGN — tuiles NULL après échec HTTP 502** — quand une tuile
+  échouait (HTTP 5xx, timeout), `tile_rasters[[idx]] <- r` était
+  sauté mais `idx` était quand même incrémenté, laissant des trous
+  `NULL` dans la liste. `terra::merge` plantait alors avec
+  `[sprc] list element is a: NULL`. `download_ign_tiled()` filtre
+  désormais les `NULL` avant le mosaïquage et émet un avertissement
+  clair indiquant combien de tuiles ont échoué.
+* **WMS IGN — retry sur erreurs serveur transitoires** —
+  `download_wms_tile()` retente jusqu'à 4 fois avec backoff
+  exponentiel (1s, 2s, 4s, 8s) sur les erreurs HTTP 502/503/504,
+  timeouts et resets. Élimine en pratique la plupart des échecs
+  liés à la charge de la Géoplateforme IGN.
+
 # opencanopy 0.1.1
 
 Maintenance release consolidating a session of downstream-integration
