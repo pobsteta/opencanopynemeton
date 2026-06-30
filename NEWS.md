@@ -1,3 +1,17 @@
+# opencanopy 0.1.2
+
+## Fixed
+- `setup_conda_env()` vérifie désormais la **liste complète** des modules Python
+  requis par `pipeline_aoi_to_chm()` — torch + inférence (torchvision, timm,
+  segmentation_models_pytorch) **et** le stack géospatial (geopandas, shapely,
+  pyproj, rioxarray, xarray). Auparavant seuls `torch, numpy, rasterio,
+  huggingface_hub` étaient contrôlés, si bien qu'un env incomplet (créé à la
+  main) passait le diagnostic puis échouait sur `ModuleNotFoundError: geopandas`
+  à l'étape AOI/CHM.
+- Nouvelle option `setup_conda_env(install_missing = TRUE)` : installe les
+  modules manquants via pip dans l'environnement (sinon, avertit avec la
+  commande à lancer). `setup_conda_env` est désormais exporté.
+
 # opencanopy 0.1.1
 
 Maintenance release consolidating a session of downstream-integration
