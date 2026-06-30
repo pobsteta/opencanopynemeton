@@ -1,3 +1,23 @@
+# opencanopy 0.1.3
+
+### Bug Fixes
+
+* **`setup_conda_env()` vérifie le stack géospatial complet** — le contrôle
+  ne portait que sur `torch, numpy, rasterio, huggingface_hub`, alors que
+  `pipeline_aoi_to_chm()` charge aussi `geopandas, shapely, pyproj, rioxarray,
+  xarray` (+ `torchvision, timm, segmentation_models_pytorch`). Un env créé à
+  la main avec seulement torch/rasterio passait le diagnostic puis échouait sur
+  `ModuleNotFoundError: geopandas` à l'étape AOI/CHM (aucun `chm_1_5m.tif`
+  produit). `setup_conda_env()` contrôle désormais la liste complète
+  (`OPEN_CANOPY_PY_MODULES`).
+
+### New Features
+
+* **`setup_conda_env(install_missing = TRUE)`** — installe les modules Python
+  manquants via pip dans l'environnement ; par défaut (`FALSE`) signale
+  seulement, avec la commande exacte à lancer. `setup_conda_env` est désormais
+  exporté.
+
 # opencanopy 0.1.2
 
 Patch release ciblée sur la robustesse des téléchargements WMS IGN.

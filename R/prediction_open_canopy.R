@@ -30,14 +30,43 @@ RES_IGN  <- 0.2  # Résolution des ortho IGN
 # Environnement conda (miniforge / open_canopy)
 CONDA_ENV <- "open_canopy"
 
+# Modules Python requis par le pipeline `pipeline_aoi_to_chm()` (nom d'import
+# -> nom pip). Le pipeline charge le stack géospatial (geopandas / shapely /
+# pyproj / rioxarray / xarray) en plus de torch + inférence (torchvision /
+# timm / segmentation_models_pytorch) : un env créé à la main n'a souvent que
+# torch/rasterio, d'où des échecs `ModuleNotFoundError` à l'étape AOI/CHM.
+OPEN_CANOPY_PY_MODULES <- c(
+  torch                       = "torch",
+  torchvision                 = "torchvision",
+  numpy                       = "numpy",
+  rasterio                    = "rasterio",
+  huggingface_hub             = "huggingface_hub",
+  timm                        = "timm",
+  segmentation_models_pytorch = "segmentation-models-pytorch",
+  geopandas                   = "geopandas",
+  shapely                     = "shapely",
+  pyproj                      = "pyproj",
+  rioxarray                   = "rioxarray",
+  xarray                      = "xarray"
+)
+
 # ==============================================================================
 # 1. Interface Python via reticulate + conda open_canopy
 # ==============================================================================
 
 #' Configurer reticulate pour utiliser l'environnement conda open_canopy
 #'
-#' @param envname Nom de l'environnement conda
-setup_conda_env <- function(envname = CONDA_ENV) {
+#' Vérifie la présence de **tous** les modules Python requis par le pipeline
+#' Open-Canopy (torch + inférence ET le stack géospatial geopandas / shapely /
+#' pyproj / rioxarray / xarray). Avec `install_missing = TRUE`, installe les
+#' manquants via pip dans l'environnement.
+#'
+#' @param envname Nom de l'environnement conda.
+#' @param install_missing Si `TRUE`, installe les modules manquants via pip.
+#'   Par défaut `FALSE` : signale seulement, avec la commande à lancer.
+#' @return (Invisible) le vecteur des noms d'import des modules manquants.
+#' @export
+setup_conda_env <- function(envname = CONDA_ENV, install_missing = FALSE) {
   if (!requireNamespace("reticulate", quietly = TRUE)) {
     install.packages("reticulate")
   }
@@ -47,12 +76,31 @@ setup_conda_env <- function(envname = CONDA_ENV) {
   use_condaenv(envname, required = TRUE)
   message("Environnement conda configuré: ", envname)
 
-  # Vérifier les modules disponibles
-  modules <- c("torch", "numpy", "rasterio", "huggingface_hub")
-  for (mod in modules) {
-    available <- py_module_available(mod)
-    message(sprintf("  %s: %s", mod, ifelse(available, "OK", "MANQUANT")))
+  # Vérifier la liste complète des modules requis par le pipeline
+  modules   <- names(OPEN_CANOPY_PY_MODULES)
+  available <- vapply(modules, py_module_available, logical(1))
+  for (i in seq_along(modules)) {
+    message(sprintf("  %s: %s", modules[i],
+                    ifelse(available[i], "OK", "MANQUANT")))
   }
+
+  missing <- modules[!available]
+  if (length(missing)) {
+    pip_pkgs <- unname(OPEN_CANOPY_PY_MODULES[missing])
+    if (isTRUE(install_missing)) {
+      message("Installation des modules manquants (pip): ",
+              paste(pip_pkgs, collapse = ", "))
+      py_install(pip_pkgs, envname = envname, pip = TRUE)
+    } else {
+      warning(sprintf(
+        paste0("Modules Python manquants dans '%s' : %s.\n",
+               "Réparez avec setup_conda_env(install_missing = TRUE), ou :\n",
+               "  python -m pip install %s"),
+        envname, paste(missing, collapse = ", "),
+        paste(pip_pkgs, collapse = " ")), call. = FALSE)
+    }
+  }
+  invisible(missing)
 }
 
 #' Trouver le nom du fichier checkpoint dans un dépôt HF via l'API
