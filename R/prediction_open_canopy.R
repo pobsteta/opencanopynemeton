@@ -223,8 +223,16 @@ tile_for_inference <- function(ign_raster, tile_size = 1000, overlap = 0) {
 #' @param normalize_to Plage cible ("0_1" ou "0_10000")
 #' @return SpatRaster normalisé
 normalize_for_model <- function(tile, normalize_to = "0_1") {
-  vals <- values(tile)
-  current_max <- max(vals, na.rm = TRUE)
+  # La fonction n'a besoin que du maximum : global("max") le donne en streaming,
+  # la ou values() rapatriait la tuile entiere (4 bandes) — sur chaque tuile de
+  # chaque prediction, c'est le rapatriement le plus systematique du paquet.
+  maxima <- as.numeric(global(tile, "max", na.rm = TRUE)[, "max"])
+  maxima <- maxima[is.finite(maxima)]
+
+  # Tuile (ou bande) entierement NA : rien a normaliser. values() renvoyait
+  # -Inf avec un warning ; on sort proprement.
+  if (length(maxima) == 0) return(tile)
+  current_max <- max(maxima)
 
   if (normalize_to == "0_1") {
     if (current_max > 1) {
@@ -360,26 +368,54 @@ load_predictions <- function(prediction_path) {
 }
 
 #' Évaluer les prédictions vs CHM de référence
-evaluate_predictions <- function(prediction, reference) {
+#'
+#' Biais, RMSE et nombre de pixels sont exacts et calculés en streaming sur le
+#' seul raster de différence ; le MAE l'est aussi, au prix d'une couche dérivée.
+#' `values()` rapatriait au contraire trois couches pleine résolution
+#' simultanément (plusieurs Go à 0.20 m) — et se cassait dès que prédiction et
+#' référence n'avaient pas exactement le même masque de NA, `cor()` recevant
+#' alors deux vecteurs de longueurs différentes.
+#'
+#' Le R² demande des moments croisés, hors de portée de `global()` sans
+#' matérialiser deux couches de plus : il est estimé sur un échantillon régulier
+#' borné à `max_cells` paires (exact dès que le raster y tient), où les cellules
+#' NA de part ou d'autre sont écartées par paires.
+#'
+#' @param prediction SpatRaster CHM prédit
+#' @param reference SpatRaster CHM de référence
+#' @param max_cells Taille max de l'échantillon régulier servant au R²
+#' @return liste des métriques + le raster de différence
+evaluate_predictions <- function(prediction, reference, max_cells = 1e6) {
   if (!compareGeom(prediction, reference, stopOnError = FALSE)) {
     message("Alignement des rasters...")
     prediction <- resample(prediction, reference, method = "bilinear")
   }
 
+  # La difference porte deja le masque des cellules valides des deux cotes.
   diff_raster <- prediction - reference
-  pred_vals <- values(prediction, na.rm = TRUE)
-  ref_vals <- values(reference, na.rm = TRUE)
-  diff_vals <- values(diff_raster, na.rm = TRUE)
 
-  mae <- mean(abs(diff_vals))
-  rmse <- sqrt(mean(diff_vals^2))
-  bias <- mean(diff_vals)
-  r_squared <- cor(pred_vals, ref_vals)^2
+  # Un seul passage streame sur la difference : biais, RMSE et effectif.
+  g <- global(diff_raster, c("mean", "sdpop", "notNA"), na.rm = TRUE)
+  bias <- as.numeric(g[1, "mean"])
+
+  # RMSE reconstruite depuis les moments : E[x^2] == sd_pop(x)^2 + E[x]^2.
+  # (Ne pas prendre global("rms") : terra y divise par n-1, pas par n.)
+  rmse <- sqrt(as.numeric(g[1, "std"])^2 + bias^2)
+
+  # Seule metrique exacte a demander une couche derivee — une de plus que la
+  # difference, la ou values() en tenait trois en memoire d'un coup.
+  mae <- as.numeric(global(abs(diff_raster), "mean", na.rm = TRUE))
+
+  # R2 sur un echantillon regulier borne : na.rm ecarte les paires incompletes,
+  # donc prediction et reference restent alignees quels que soient leurs NA.
+  ech <- spatSample(c(prediction, reference), max_cells, method = "regular",
+                    na.rm = TRUE, warn = FALSE)
+  r_squared <- cor(ech[[1]], ech[[2]])^2
 
   metrics <- list(
     mae = mae, rmse = rmse, bias = bias,
     r_squared = r_squared, diff_raster = diff_raster,
-    n_pixels = length(diff_vals)
+    n_pixels = as.numeric(g[1, "notNA"])
   )
 
   message("=== Métriques ===")
@@ -390,7 +426,7 @@ evaluate_predictions <- function(prediction, reference) {
 
 #' Visualiser la comparaison prédiction vs référence
 plot_prediction_comparison <- function(prediction, reference, metrics = NULL,
-                                        tile_name = "") {
+                                        tile_name = "", n_points = 50000) {
   par(mfrow = c(2, 2), mar = c(2, 2, 3, 4))
 
   col_chm <- colorRampPalette(
@@ -408,19 +444,22 @@ plot_prediction_comparison <- function(prediction, reference, metrics = NULL,
         "#d9ef8b", "#91cf60", "#1a9850")
     )(100)
 
-    diff_vals <- values(metrics$diff_raster, na.rm = TRUE)
-    max_abs <- max(abs(range(diff_vals)))
+    # global() streame : values() rapatriait le raster d'erreur pour une amplitude.
+    g <- global(metrics$diff_raster, c("min", "max"), na.rm = TRUE)
+    max_abs <- max(abs(c(g[1, "min"], g[1, "max"])))
 
     plot(metrics$diff_raster, main = "Erreur (Pred - Ref)",
          col = col_div, range = c(-max_abs, max_abs),
          plg = list(title = "Delta (m)"))
 
-    pred_vals <- values(prediction, na.rm = TRUE)
-    ref_vals <- values(reference, na.rm = TRUE)
-    n <- min(length(pred_vals), 50000)
-    idx <- sample(length(pred_vals), n)
+    # Le nuage n'affiche que n_points points : les tirer directement par
+    # echantillonnage regulier, au lieu de rapatrier les deux couches entieres
+    # pour n'en garder qu'une fraction. na.rm ecarte les cellules NA de part
+    # ou d'autre, donc les paires restent alignees.
+    ech <- spatSample(c(prediction, reference), n_points, method = "regular",
+                      na.rm = TRUE, warn = FALSE)
 
-    plot(ref_vals[idx], pred_vals[idx],
+    plot(ech[[2]], ech[[1]],
          pch = ".", col = rgb(0, 0.5, 0, 0.1),
          main = sprintf("Pred vs Ref (R²=%.3f, MAE=%.2fm)",
                          metrics$r_squared, metrics$mae),
