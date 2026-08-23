@@ -121,6 +121,29 @@ load_aoi <- function(gpkg_path, layer = NULL) {
   return(aoi)
 }
 
+#' Rattacher le CRS d'un raster à l'autorité EPSG:2154
+#'
+#' Les GeoTIFF renvoyés par le WMS IGN portent un WKT dont le *nom* est
+#' "EPSG:2154" mais qui n'a pas de bloc d'autorité `ID["EPSG",2154]` : le datum
+#' y est "unnamed" et l'ellipsoïde "unretrievable - using WGS84". Conséquence,
+#' `sf::st_crs(x)$epsg` y lit `NA`, et tout aval qui écrit un GeoPackage depuis
+#' ces rasters (segmentation de houppiers, exports vectoriels) embarque un CRS
+#' non rattachable. On le re-tamponne à l'écriture, une fois pour tous les
+#' consommateurs, plutôt que de laisser chacun le rattraper à la lecture.
+#'
+#' Ne touche que les rasters dépourvus de code d'autorité : un raster
+#' correctement identifié dans un autre CRS est laissé tel quel (ce serait un
+#' bug ailleurs, pas quelque chose à masquer ici).
+#'
+#' @param r SpatRaster
+#' @return le SpatRaster, CRS rattaché à EPSG:2154 si l'autorité manquait
+ancrer_crs_l93 <- function(r) {
+  if (is.na(crs(r, describe = TRUE)$code)) {
+    crs(r) <- "EPSG:2154"
+  }
+  r
+}
+
 # ==============================================================================
 # 2. Téléchargement des ortho IGN via WMS (avec tuilage)
 # ==============================================================================
@@ -171,10 +194,9 @@ download_wms_tile <- function(bbox, layer, res_m = RES_IGN, dest_file,
       # Vérifier que c'est bien un raster (pas un XML d'erreur)
       r <- rast(tmp_file)
 
-      # Assigner le CRS si nécessaire
-      if (is.na(crs(r)) || crs(r) == "") {
-        crs(r) <- "EPSG:2154"
-      }
+      # Assigner / rattacher le CRS : le WMS renvoie soit rien, soit un WKT
+      # nommé "EPSG:2154" mais sans bloc d'autorité (cf. ancrer_crs_l93()).
+      r <- ancrer_crs_l93(r)
 
       # Forcer l'emprise correcte
       ext(r) <- ext(xmin, xmax, ymin, ymax)
@@ -329,8 +351,10 @@ download_ortho_for_aoi <- function(aoi, output_dir, res_m = RES_IGN,
     message(sprintf("  IRC: %s", irc_path))
     message("Réutilisation des fichiers existants (supprimez-les pour forcer le re-téléchargement).")
 
-    rvb <- rast(rvb_path)
-    irc <- rast(irc_path)
+    # Les mosaïques mises en cache par une version antérieure peuvent porter
+    # le WKT WMS non rattaché : les ancrer avant de les servir à l'aval.
+    rvb <- ancrer_crs_l93(rast(rvb_path))
+    irc <- ancrer_crs_l93(rast(irc_path))
     # Restaurer les noms de bandes (perdus lors de l'écriture GeoTIFF)
     names(rvb)[1:min(3, nlyr(rvb))] <- c("Rouge", "Vert", "Bleu")[1:min(3, nlyr(rvb))]
     names(irc)[1:min(3, nlyr(irc))] <- c("PIR", "Rouge", "Vert")[1:min(3, nlyr(irc))]
@@ -399,9 +423,9 @@ download_ortho_for_aoi <- function(aoi, output_dir, res_m = RES_IGN,
   rvb <- crop(rvb, aoi_vect)
   irc <- crop(irc, aoi_vect)
 
-  # Sauvegarder les mosaïques finales
-  writeRaster(rvb, rvb_path, overwrite = TRUE)
-  writeRaster(irc, irc_path, overwrite = TRUE)
+  # Sauvegarder les mosaïques finales (CRS rattaché à l'autorité EPSG)
+  writeRaster(ancrer_crs_l93(rvb), rvb_path, overwrite = TRUE)
+  writeRaster(ancrer_crs_l93(irc), irc_path, overwrite = TRUE)
 
   # Recharger depuis les fichiers consolidés pour que les SpatRaster
   # pointent vers ortho_rvb.tif / ortho_irc.tif (et non les tuiles)
@@ -1751,6 +1775,9 @@ pipeline_aoi_to_chm <- function(aoi_path,
   chm <- run_inference(ortho$rvb, ortho$irc, model_path, model_name,
                         open_canopy_src = open_canopy_src,
                         progress_callback = progress_callback)
+  # L'aller-retour par rasterio recopie le CRS de l'entrée : le rattacher ici
+  # couvre d'un coup chm_predicted_1_5m / _0_2m et chm_vegetation_0_2m.
+  chm <- ancrer_crs_l93(chm)
 
   # --- Étape 5 : Export ---
   message("\n>>> ÉTAPE 5/5 : Export des résultats")

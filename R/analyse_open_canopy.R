@@ -337,21 +337,42 @@ plot_canopy_classes <- function(chm_raster,
 # ==============================================================================
 
 #' Statistiques de hauteur de canopée
-compute_chm_stats <- function(chm_raster) {
-  vals <- values(chm_raster, na.rm = TRUE)
+#'
+#' Ce que `global()` sait calculer en streaming l'est, et reste exact : min,
+#' max, moyenne, écart-type, comptages. `values()` rapatriait la couche entière
+#' (plusieurs Go à 0.20 m, 4e8 cellules) pour une poignée de scalaires.
+#'
+#' Quantiles et parts de surface échappent à `global()`. Les obtenir par un
+#' raster dérivé (`global(chm >= 2, "mean")`) serait exact mais matérialise une
+#' couche de plus, soit *plus* de mémoire que `values()` : mesuré à 6 Go contre
+#' 4,7 Go sur 1,4e8 cellules. On les estime donc sur un échantillon régulier
+#' borné à `max_cells` cellules — mémoire constante (~1,2 Go au lieu de 4,7 Go
+#' sur ce même raster), écart mesuré de l'ordre de 0,01 point de pourcentage,
+#' et résultat exact dès que le raster tient dans `max_cells`.
+#'
+#' @param chm_raster SpatRaster CHM
+#' @param max_cells Taille max de l'échantillon régulier (quantiles et parts)
+#' @return data.frame d'une ligne
+compute_chm_stats <- function(chm_raster, max_cells = 1e6) {
+  g <- global(chm_raster, c("min", "max", "mean", "sd", "notNA", "isNA"),
+              na.rm = TRUE)
+
+  ech <- spatSample(chm_raster, max_cells, method = "regular",
+                    na.rm = TRUE, warn = FALSE)[[1]]
+  qs <- quantile(ech, c(0.25, 0.5, 0.75), names = FALSE)
 
   data.frame(
-    n_pixels = length(vals),
-    n_na = ncell(chm_raster) - length(vals),
-    min_height = min(vals),
-    max_height = max(vals),
-    mean_height = mean(vals),
-    median_height = median(vals),
-    sd_height = sd(vals),
-    q25 = quantile(vals, 0.25),
-    q75 = quantile(vals, 0.75),
-    pct_forest = sum(vals >= 2) / length(vals) * 100,
-    pct_tall_trees = sum(vals >= 20) / length(vals) * 100,
+    n_pixels = as.numeric(g[1, "notNA"]),
+    n_na = as.numeric(g[1, "isNA"]),
+    min_height = as.numeric(g[1, "min"]),
+    max_height = as.numeric(g[1, "max"]),
+    mean_height = as.numeric(g[1, "mean"]),
+    median_height = qs[2],
+    sd_height = as.numeric(g[1, "sd"]),
+    q25 = qs[1],
+    q75 = qs[3],
+    pct_forest = mean(ech >= 2) * 100,
+    pct_tall_trees = mean(ech >= 20) * 100,
     stringsAsFactors = FALSE
   )
 }
@@ -359,25 +380,34 @@ compute_chm_stats <- function(chm_raster) {
 #' Statistiques spectrales d'une ortho IRC IGN
 #'
 #' @param irc_raster SpatRaster IRC IGN
+#' @param max_cells Taille max de l'échantillon régulier (médiane et parts)
 #' @return data.frame avec statistiques par bande + NDVI
-compute_irc_stats <- function(irc_raster) {
+compute_irc_stats <- function(irc_raster, max_cells = 1e6) {
   ndvi <- compute_ndvi(irc_raster)
-  ndvi_vals <- values(ndvi, na.rm = TRUE)
 
   # Moyennes par bande en streaming : values() chargeait l'ortho IRC (plusieurs Go
   # a 0.20 m) une fois par bande, uniquement pour une moyenne.
   bandes_mean <- global(irc_raster[[c("PIR", "Rouge", "Vert")]], "mean", na.rm = TRUE)
 
+  # Meme regle pour le NDVI : la fonction tourne sur une ortho IRC entiere
+  # (analyse_open_canopy.R, boucle sur les dalles), values() y coutait des Go.
+  ndvi_g <- global(ndvi, c("mean", "sd"), na.rm = TRUE)
+
+  # Mediane et parts de surface : hors de portee de global(), estimees sur un
+  # echantillon regulier borne (cf. compute_chm_stats pour le raisonnement).
+  ndvi_ech <- spatSample(ndvi, max_cells, method = "regular",
+                         na.rm = TRUE, warn = FALSE)[[1]]
+
   stats <- data.frame(
     pir_mean = as.numeric(bandes_mean["PIR", "mean"]),
     rouge_mean = as.numeric(bandes_mean["Rouge", "mean"]),
     vert_mean = as.numeric(bandes_mean["Vert", "mean"]),
-    ndvi_mean = mean(ndvi_vals),
-    ndvi_median = median(ndvi_vals),
-    ndvi_sd = sd(ndvi_vals),
-    pct_vegetation = sum(ndvi_vals >= 0.3) / length(ndvi_vals) * 100,
-    pct_dense_veg = sum(ndvi_vals >= 0.6) / length(ndvi_vals) * 100,
-    pct_bare_soil = sum(ndvi_vals < 0.1) / length(ndvi_vals) * 100,
+    ndvi_mean = as.numeric(ndvi_g[1, "mean"]),
+    ndvi_median = median(ndvi_ech),
+    ndvi_sd = as.numeric(ndvi_g[1, "sd"]),
+    pct_vegetation = mean(ndvi_ech >= 0.3) * 100,
+    pct_dense_veg = mean(ndvi_ech >= 0.6) * 100,
+    pct_bare_soil = mean(ndvi_ech < 0.1) * 100,
     stringsAsFactors = FALSE
   )
 
@@ -420,14 +450,27 @@ cross_ndvi_chm <- function(ndvi_raster, chm_raster) {
 #' Histogramme des hauteurs de canopée
 plot_chm_histogram <- function(chm_raster,
                                 title = "Distribution des hauteurs de canopée",
-                                n_breaks = 50) {
-  vals <- values(chm_raster, na.rm = TRUE)
+                                n_breaks = 50,
+                                max_cells = 1e6) {
+  # Un histogramme n'a pas besoin de toutes les cellules : echantillon regulier
+  # borne pour la forme de la distribution, global() pour la moyenne exacte
+  # affichee. values() rapatriait la couche entiere pour un seul graphique.
+  vals <- spatSample(chm_raster, max_cells, method = "regular",
+                     na.rm = TRUE, warn = FALSE)[[1]]
+  moyenne <- as.numeric(global(chm_raster, "mean", na.rm = TRUE))
+
+  ylab <- if (ncell(chm_raster) > max_cells) {
+    "Fréquence (échantillon régulier)"
+  } else {
+    "Fréquence"
+  }
+
   hist(vals, breaks = n_breaks, main = title,
-       xlab = "Hauteur (m)", ylab = "Fréquence",
+       xlab = "Hauteur (m)", ylab = ylab,
        col = "#41ab5d", border = "white")
-  abline(v = mean(vals), col = "red", lwd = 2, lty = 2)
+  abline(v = moyenne, col = "red", lwd = 2, lty = 2)
   legend("topright",
-         legend = sprintf("Moyenne: %.1f m", mean(vals)),
+         legend = sprintf("Moyenne: %.1f m", moyenne),
          col = "red", lty = 2, lwd = 2, bty = "n")
 }
 
@@ -449,8 +492,9 @@ plot_canopy_change <- function(change_raster,
       "#d9ef8b", "#91cf60", "#1a9850")
   )(100)
 
-  vals <- values(change_raster, na.rm = TRUE)
-  max_abs <- max(abs(range(vals)))
+  # global() streame : values() rapatriait le raster entier pour une amplitude.
+  g <- global(change_raster, c("min", "max"), na.rm = TRUE)
+  max_abs <- max(abs(c(g[1, "min"], g[1, "max"])))
 
   plot(change_raster, main = title, col = col_palette,
        range = c(-max_abs, max_abs),
