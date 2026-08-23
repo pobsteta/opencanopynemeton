@@ -26,6 +26,15 @@ et rend rattachable le CRS de tous les rasters produits par le pipeline.
   troué, une prédiction rognée — les deux vecteurs n'avaient pas la même
   longueur et la fonction s'arrêtait sur une erreur. L'échantillonnage par
   paires écarte les cellules `NA` de part ou d'autre, donc le cas fonctionne.
+* **`setup_conda_env()` ne vérifiait qu'un quart du stack Python** — le
+  contrôle portait sur `torch, numpy, rasterio, huggingface_hub`, alors que
+  `pipeline_aoi_to_chm()` charge aussi `geopandas, shapely, pyproj, rioxarray,
+  xarray` — plus `torchvision, timm, segmentation_models_pytorch` pour
+  l'inférence. Un environnement créé à la main avec seulement torch/rasterio
+  passait le diagnostic, puis échouait sur `ModuleNotFoundError: geopandas` à
+  l'étape AOI/CHM, sans produire de `chm_1_5m.tif`. La liste complète est
+  désormais centralisée dans `OPEN_CANOPY_PY_MODULES` (nom d'import → nom pip)
+  et vérifiée en entier.
 * **CRS non rattachable sur tous les rasters produits** — les GeoTIFF renvoyés
   par le WMS IGN portent un WKT dont le *nom* est `"EPSG:2154"` mais qui n'a
   pas de bloc d'autorité `ID["EPSG",2154]` : le datum y est `"unnamed"` et
@@ -62,6 +71,10 @@ et rend rattachable le CRS de tous les rasters produits par le pipeline.
 
 ### New Features
 
+* **`setup_conda_env(install_missing = TRUE)`** installe via pip les modules
+  Python manquants dans l'environnement. Par défaut (`FALSE`), la fonction se
+  contente de les signaler avec la commande exacte à lancer, et retourne
+  invisiblement le vecteur des modules absents.
 * `ancrer_crs_l93()` est exportée : elle permet de réparer à la lecture les
   rasters produits par une version antérieure, sans relancer le pipeline.
 * `compute_chm_stats()`, `compute_irc_stats()` et `evaluate_predictions()`
