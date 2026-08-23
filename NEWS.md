@@ -1,3 +1,74 @@
+# opencanopy 1.0.0
+
+Première version majeure. Elle solde le balayage `values()` ouvert par la 0.1.3
+et rend rattachable le CRS de tous les rasters produits par le pipeline.
+
+### Bug Fixes
+
+* **Balayage `values()` — les huit sites restants** — la 0.1.3 corrigeait
+  `pct_veg` mais laissait en suspens le `grep -n "values(" R/` qu'elle
+  réclamait elle-même. Deux sites portaient la même classe de risque :
+  `compute_irc_stats()`, appelé sur une **ortho IRC entière** (boucle sur les
+  dalles), et `evaluate_predictions()`, qui tenait **trois** couches pleine
+  résolution en mémoire simultanément — `prediction`, `reference` et leur
+  différence — pour quatre scalaires. Les six autres :
+  `normalize_for_model()` (le plus systématique du paquet : chaque tuile de
+  chaque prédiction, alors que seul le maximum est utilisé),
+  `compute_chm_stats()`, `plot_chm_histogram()`, `plot_canopy_change()` et
+  `plot_prediction_comparison()` (deux occurrences). Mesuré à `memfrac = 0.3` :
+  `compute_chm_stats()` sur 1,44e8 cellules passe de **4,7 Go à 1,16 Go**
+  (85 s → 17 s), `evaluate_predictions()` sur 3,6e7 cellules de **2,18 Go à
+  1,20 Go**.
+* **`evaluate_predictions()` — `cor()` sur des vecteurs de longueurs
+  différentes** — les valeurs de `prediction` et de `reference` étaient
+  filtrées **séparément** par `values(x, na.rm = TRUE)` avant d'être passées à
+  `cor()`. Dès que les deux masques de `NA` différaient — un CHM de référence
+  troué, une prédiction rognée — les deux vecteurs n'avaient pas la même
+  longueur et la fonction s'arrêtait sur une erreur. L'échantillonnage par
+  paires écarte les cellules `NA` de part ou d'autre, donc le cas fonctionne.
+* **CRS non rattachable sur tous les rasters produits** — les GeoTIFF renvoyés
+  par le WMS IGN portent un WKT dont le *nom* est `"EPSG:2154"` mais qui n'a
+  pas de bloc d'autorité `ID["EPSG",2154]` : le datum y est `"unnamed"` et
+  l'ellipsoïde `"unretrievable - using WGS84"`. Le garde `is.na(crs(r)) ||
+  crs(r) == ""` ne voyait pas passer ce cas, et le WKT dégénéré se propageait
+  jusqu'à `chm_predicted_0_2m.tif`, où `sf::st_crs(x)$epsg` lit `NA`. Tout aval
+  qui écrit un GeoPackage depuis ces rasters — segmentation de houppiers,
+  exports vectoriels — embarquait un CRS non rattachable. `ancrer_crs_l93()`
+  re-tamponne à `EPSG:2154` les seuls rasters dépourvus de code d'autorité (un
+  raster correctement identifié dans un autre CRS est laissé tel quel) et est
+  appliqué en quatre points : la tuile WMS — la racine du problème —, la
+  branche cache des mosaïques (ce qui rattrape les `ortho_*.tif` déjà sur
+  disque), leur écriture, et le CHM au retour de l'inférence Python, dont
+  l'aller-retour par rasterio recopie le CRS d'entrée.
+
+### Changements de comportement
+
+* **Statistiques descriptives : exactes ou estimées, selon ce que `global()`
+  sait faire.** Min, max, moyenne, écart-type, comptages, biais, RMSE et MAE
+  restent **exacts**. En revanche les quantiles (médiane, Q25, Q75), les parts
+  de surface (`pct_forest`, `pct_tall_trees`, `pct_vegetation`,
+  `pct_dense_veg`, `pct_bare_soil`) et le R² sont désormais estimés sur un
+  échantillon régulier borné à `max_cells` cellules — et redeviennent exacts
+  dès que le raster tient dans cette limite. Écart mesuré sur les sorties IGN
+  réelles à 0,20 m : **0,008 point de pourcentage** sur les parts, moins d'un
+  millimètre sur les quantiles de hauteur, 1e-4 sur le R². La voie « exacte »
+  évidente pour les parts, `global(chm >= 2, "mean")`, a été mesurée puis
+  écartée : elle matérialise une couche de plus et coûte **6 Go, soit plus que
+  `values()`** — c'est écrit dans la documentation des fonctions pour que le
+  piège ne soit pas retenté.
+* **Attention à `global(x, "rms")`** : terra y divise par *n−1*, pas par *n*.
+  Le prendre pour la RMSE introduit un biais silencieux ; elle est reconstruite
+  depuis les moments, `sqrt(sd_pop² + moyenne²)`.
+
+### New Features
+
+* `ancrer_crs_l93()` est exportée : elle permet de réparer à la lecture les
+  rasters produits par une version antérieure, sans relancer le pipeline.
+* `compute_chm_stats()`, `compute_irc_stats()` et `evaluate_predictions()`
+  acceptent `max_cells` (défaut `1e6`), et `plot_chm_histogram()` /
+  `plot_prediction_comparison()` acceptent respectivement `max_cells` et
+  `n_points`, pour régler le compromis précision/mémoire.
+
 # opencanopy 0.1.3
 
 Patch release ciblée sur l'empreinte mémoire des statistiques rasters.
