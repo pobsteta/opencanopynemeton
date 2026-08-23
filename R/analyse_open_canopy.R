@@ -83,10 +83,11 @@ load_chm <- function(tile_path) {
   message(sprintf("  Dimensions: %d x %d | Résolution: %.2f m",
                    nrow(r), ncol(r), res(r)[1]))
 
-  vals <- values(r, na.rm = TRUE)
-  if (length(vals) > 0) {
+  # global() streame : pas de rapatriement de la dalle entiere pour un message.
+  st <- global(r, c("min", "max", "mean"), na.rm = TRUE)
+  if (!is.na(st[1, "mean"])) {
     message(sprintf("  Hauteur: min=%.2f, max=%.2f, moy=%.2f m",
-                     min(vals), max(vals), mean(vals)))
+                     st[1, "min"], st[1, "max"], st[1, "mean"]))
   }
   return(r)
 }
@@ -131,9 +132,10 @@ compute_ndvi <- function(irc_raster) {
   ndvi <- (pir - rouge) / (pir + rouge)
   names(ndvi) <- "NDVI"
 
-  vals <- values(ndvi, na.rm = TRUE)
+  # global() streame : le message ne doit pas materialiser la couche entiere.
+  st <- global(ndvi, c("min", "max", "mean"), na.rm = TRUE)
   message(sprintf("NDVI calculé: min=%.3f, max=%.3f, moy=%.3f",
-                   min(vals), max(vals), mean(vals)))
+                   st[1, "min"], st[1, "max"], st[1, "mean"]))
   return(ndvi)
 }
 
@@ -182,9 +184,10 @@ compute_ndwi <- function(irc_raster) {
   ndwi <- (vert - pir) / (vert + pir)
   names(ndwi) <- "NDWI"
 
-  vals <- values(ndwi, na.rm = TRUE)
+  # global() streame : le message ne doit pas materialiser la couche entiere.
+  st <- global(ndwi, c("min", "max", "mean"), na.rm = TRUE)
   message(sprintf("NDWI calculé: min=%.3f, max=%.3f, moy=%.3f",
-                   min(vals), max(vals), mean(vals)))
+                   st[1, "min"], st[1, "max"], st[1, "mean"]))
   return(ndwi)
 }
 
@@ -197,7 +200,9 @@ mask_vegetation <- function(ndvi_raster, threshold = 0.3) {
   veg_mask <- ndvi_raster >= threshold
   names(veg_mask) <- "vegetation"
 
-  pct <- sum(values(veg_mask, na.rm = TRUE)) / sum(!is.na(values(veg_mask))) * 100
+  # global() streame par blocs : sur un masque logique, mean(na.rm) est exactement
+  # sum(TRUE) / sum(!is.na()), sans rapatrier la couche entiere en memoire.
+  pct <- as.numeric(global(veg_mask, "mean", na.rm = TRUE)) * 100
   message(sprintf("Végétation détectée (NDVI >= %.2f): %.1f%%", threshold, pct))
   return(veg_mask)
 }
@@ -337,7 +342,7 @@ compute_chm_stats <- function(chm_raster) {
 
   data.frame(
     n_pixels = length(vals),
-    n_na = sum(is.na(values(chm_raster))),
+    n_na = ncell(chm_raster) - length(vals),
     min_height = min(vals),
     max_height = max(vals),
     mean_height = mean(vals),
@@ -359,10 +364,14 @@ compute_irc_stats <- function(irc_raster) {
   ndvi <- compute_ndvi(irc_raster)
   ndvi_vals <- values(ndvi, na.rm = TRUE)
 
+  # Moyennes par bande en streaming : values() chargeait l'ortho IRC (plusieurs Go
+  # a 0.20 m) une fois par bande, uniquement pour une moyenne.
+  bandes_mean <- global(irc_raster[[c("PIR", "Rouge", "Vert")]], "mean", na.rm = TRUE)
+
   stats <- data.frame(
-    pir_mean = mean(values(irc_raster[["PIR"]], na.rm = TRUE)),
-    rouge_mean = mean(values(irc_raster[["Rouge"]], na.rm = TRUE)),
-    vert_mean = mean(values(irc_raster[["Vert"]], na.rm = TRUE)),
+    pir_mean = as.numeric(bandes_mean["PIR", "mean"]),
+    rouge_mean = as.numeric(bandes_mean["Rouge", "mean"]),
+    vert_mean = as.numeric(bandes_mean["Vert", "mean"]),
     ndvi_mean = mean(ndvi_vals),
     ndvi_median = median(ndvi_vals),
     ndvi_sd = sd(ndvi_vals),

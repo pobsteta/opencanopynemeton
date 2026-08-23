@@ -464,7 +464,9 @@ detect_canopy_loss <- function(chm_t1, chm_t2, threshold = -5) {
   loss <- change <= threshold
   names(loss) <- "canopy_loss"
 
-  loss_area <- sum(values(loss, na.rm = TRUE)) * prod(res(chm_t1)) / 10000
+  # global("sum") streame : values() sur un masque plein resolution coute des Go.
+  loss_area <- as.numeric(global(loss, "sum", na.rm = TRUE)) *
+               prod(res(chm_t1)) / 10000
   message(sprintf("Perte détectée: %.2f ha (seuil: %dm)", loss_area, threshold))
   return(loss)
 }
@@ -501,7 +503,10 @@ export_to_gpkg <- function(raster_list, filename = "results.gpkg",
     name <- names(raster_list)[i]
     r <- raster_list[[i]]
 
-    if (all(values(r, na.rm = TRUE) %in% c(0, 1))) {
+    # Test binaire en streaming : compte les cellules hors {0, 1} sans charger r.
+    # NA = aucune cellule valide, ce que l'ancien all(logical(0)) rendait TRUE.
+    n_hors <- as.numeric(global(r != 0 & r != 1, "sum", na.rm = TRUE))
+    if (is.na(n_hors) || n_hors == 0) {
       v <- as.polygons(r)
       writeVector(v, out_path, layer = name, overwrite = (i == 1))
     } else {

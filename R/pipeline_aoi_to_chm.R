@@ -1824,10 +1824,19 @@ pipeline_aoi_to_chm <- function(aoi_path,
   chm_veg <- mask(chm_hr, clean_mask, maskvalues = c(FALSE, NA),
                   filename = chm_veg_path, overwrite = TRUE,
                   gdal = c("COMPRESS=LZW"))
-  pct_veg <- sum(values(clean_mask, na.rm = TRUE)) /
-             sum(!is.na(values(clean_mask))) * 100
+  # global() streame par blocs : ne jamais rapatrier le masque entier en memoire
+  # (a 0.20 m, values() sur 4e8 cellules coute plusieurs Go et tuait le pipeline).
+  # Sur un masque logique, mean(na.rm) == sum(TRUE) / sum(!is.na()), a l'identique.
+  pct_veg <- as.numeric(global(clean_mask, "mean", na.rm = TRUE)) * 100
   message(sprintf("CHM veg:  %s  (vegetation: %.1f%%, seuils NDVI>%.2f, NDWI<=%.2f)",
                   chm_veg_path, pct_veg, ndvi_threshold, ndwi_threshold))
+
+  # Statistiques du CHM calculees une seule fois, en streaming (cf. pct_veg) :
+  # values() rapatriait la couche entiere, trois fois de suite, pour un message.
+  chm_stats <- global(chm, c("min", "max", "mean"), na.rm = TRUE)
+  chm_min  <- as.numeric(chm_stats[1, "min"])
+  chm_max  <- as.numeric(chm_stats[1, "max"])
+  chm_mean <- as.numeric(chm_stats[1, "mean"])
 
   # --- Visualisation récapitulative (3x3, 9 panneaux) ---
   pdf_path <- file.path(output_dir, "resultats_aoi.pdf")
@@ -1994,9 +2003,7 @@ pipeline_aoi_to_chm <- function(aoi_path,
         title = "Pipeline Open-Canopy : ortho IGN \u2192 indices + CHM",
         subtitle = sprintf("AOI: %s | CHM brut: min=%.1fm, max=%.1fm, moy=%.1fm | Vegetation: %.1f%%",
                            basename(aoi_path),
-                           min(values(chm, na.rm = TRUE)),
-                           max(values(chm, na.rm = TRUE)),
-                           mean(values(chm, na.rm = TRUE)),
+                           chm_min, chm_max, chm_mean,
                            pct_veg),
         theme = theme(
           plot.title = element_text(size = 14, face = "bold"),
@@ -2010,13 +2017,12 @@ pipeline_aoi_to_chm <- function(aoi_path,
 
   # --- Résumé ---
   dt <- round(difftime(Sys.time(), t0, units = "mins"), 1)
-  chm_vals <- values(chm, na.rm = TRUE)
 
   message("\n##############################################################")
   message("#  Pipeline terminé en ", dt, " minutes")
   message("#")
   message(sprintf("#  CHM : min=%.1fm, max=%.1fm, moy=%.1fm",
-                   min(chm_vals), max(chm_vals), mean(chm_vals)))
+                   chm_min, chm_max, chm_mean))
   message(sprintf("#  Fichiers dans: %s", output_dir))
   message("##############################################################")
 
