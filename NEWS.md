@@ -1,3 +1,31 @@
+# opencanopy 0.1.3
+
+Patch release ciblée sur l'empreinte mémoire des statistiques rasters.
+
+### Bug Fixes
+
+* **`pipeline_aoi_to_chm()` — OOM à la dernière étape sur les grandes AOI** —
+  le pourcentage de végétation était calculé par
+  `sum(values(clean_mask, na.rm = TRUE)) / sum(!is.na(values(clean_mask)))`,
+  qui rapatriait le masque **entier** en mémoire, deux fois, plus la copie
+  temporaire du `!is.na()`. Sur Couchey (535,6 ha, 28 481 × 14 695 = 418 528 295
+  cellules à 0,20 m), cela représentait plusieurs Go de vecteurs R au pic de
+  mémoire du pipeline — juste après un `mask()` qui, lui, streamait correctement
+  vers le disque. Le processus était tué par l'OOM killer après 3 h 20 de CPU,
+  tous les livrables écrits mais aucun indicateur calculé. Le calcul passe
+  désormais par `global(clean_mask, "mean", na.rm = TRUE)`, qui streame par
+  blocs : sur un masque logique, la moyenne en ignorant les `NA` **est** la
+  proportion cherchée, au bit près.
+* **Même motif ailleurs** — `values()` sur une couche pleine résolution pour un
+  simple `min`/`max`/`mean`/`sum` a été remplacé par `global()` dans
+  `pipeline_aoi_to_chm()` (statistiques du CHM, calculées une seule fois au lieu
+  de quatre lectures complètes), `load_chm()`, `compute_ndvi()`,
+  `compute_ndwi()`, `mask_vegetation()`, `compute_irc_stats()` (moyennes des
+  trois bandes de l'ortho IRC), `detect_canopy_loss()` et `export_to_gpkg()`
+  (test binaire). `compute_chm_stats()` déduit `n_na` de `ncell()` au lieu d'une
+  seconde lecture complète. Résultats inchangés dans tous les cas, y compris sur
+  les couches entièrement `NA`.
+
 # opencanopy 0.1.2
 
 Patch release ciblée sur la robustesse des téléchargements WMS IGN.
