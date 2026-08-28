@@ -976,35 +976,130 @@ download_open_canopy_src <- function(dest = NULL, force = FALSE) {
 
 #' Découper un raster en tuiles pour l'inférence
 #'
+#' Toutes les tuiles ont **exactement les mêmes dimensions en pixels** : la
+#' dernière colonne / ligne est décalée vers l'intérieur au lieu d'être rognée.
+#' Deux raisons, à l'origine de l'effet de bord observé sur la mosaïque :
+#'   - le modèle PVTv2 est reconstruit avec un `img_size` déduit de la taille
+#'     de la tuile ; des tuiles de tailles différentes donnaient des géométries
+#'     de tête de segmentation différentes, donc des prédictions incohérentes
+#'     entre le cœur et la bordure de l'AOI ;
+#'   - les tuiles rognées étaient complétées côté Python par des **zéros**,
+#'     c'est-à-dire une bande noire artificielle que le modèle voit comme du
+#'     sol nu.
+#'
+#' Le chevauchement (200 m par défaut, ~133 px à 1.5 m) alimente le fondu
+#' pondéré de [mosaiquer_predictions()].
+#'
 #' @param r SpatRaster (déjà à 1.5m)
 #' @param tile_size Taille des tuiles en mètres
 #' @param overlap Chevauchement en mètres
-#' @return Liste nommée de SpatRasters
-make_inference_tiles <- function(r, tile_size = 1000, overlap = 50) {
-  e <- ext(r)
-  step <- tile_size - overlap
+#' @return Liste nommée de SpatRasters, portant les attributs `margin_x` et
+#'   `margin_y` (largeur du fondu, en pixels)
+make_inference_tiles <- function(r, tile_size = 1000, overlap = 200) {
+  res_x <- res(r)[1]
+  res_y <- res(r)[2]
 
-  x_starts <- seq(e[1], e[2] - tile_size + step, by = step)
-  y_starts <- seq(e[3], e[4] - tile_size + step, by = step)
+  # Dimensions en pixels, bornées par la taille du raster
+  nx <- min(ncol(r), max(32L, as.integer(round(tile_size / res_x))))
+  ny <- min(nrow(r), max(32L, as.integer(round(tile_size / res_y))))
 
-  # S'assurer de couvrir l'emprise entière
-  if (length(x_starts) == 0) x_starts <- e[1]
-  if (length(y_starts) == 0) y_starts <- e[3]
+  ox <- min(nx - 1L, as.integer(round(overlap / res_x)))
+  oy <- min(ny - 1L, as.integer(round(overlap / res_y)))
+
+  col_starts <- .tile_starts(ncol(r), nx, nx - ox)
+  row_starts <- .tile_starts(nrow(r), ny, ny - oy)
 
   tiles <- list()
-  for (x0 in x_starts) {
-    for (y0 in y_starts) {
-      x1 <- min(x0 + tile_size, e[2])
-      y1 <- min(y0 + tile_size, e[4])
-      tile_ext <- ext(x0, x1, y0, y1)
-      tile <- crop(r, tile_ext)
-      tile_name <- sprintf("tile_%06.0f_%07.0f", x0, y0)
-      tiles[[tile_name]] <- tile
+  for (c0 in col_starts) {
+    for (r0 in row_starts) {
+      x0 <- xmin(r) + (c0 - 1) * res_x
+      y1 <- ymax(r) - (r0 - 1) * res_y
+      y0 <- y1 - ny * res_y
+      tile <- crop(r, ext(x0, x0 + nx * res_x, y0, y1))
+      tiles[[sprintf("tile_%06.0f_%07.0f", x0, y0)]] <- tile
     }
   }
 
-  message(sprintf("%d tuile(s) de %dm pour l'inférence", length(tiles), tile_size))
+  # Le fondu ne porte que sur la moitié du recouvrement de chaque côté :
+  # au milieu de la zone commune, les deux tuiles pèsent le même poids.
+  attr(tiles, "margin_x") <- ox %/% 2L
+  attr(tiles, "margin_y") <- oy %/% 2L
+
+  message(sprintf(
+    "%d tuile(s) de %d x %d px (%.0f x %.0f m, recouvrement %.0f m) pour l'inférence",
+    length(tiles), nx, ny, nx * res_x, ny * res_y, ox * res_x))
   return(tiles)
+}
+
+#' Positions de départ (1-based) d'un découpage régulier et couvrant
+#'
+#' La dernière tuile est **décalée** pour finir exactement sur le bord du
+#' raster, de sorte que toutes gardent la même taille.
+#'
+#' @param n Nombre total de pixels sur l'axe
+#' @param size Taille d'une tuile en pixels
+#' @param step Pas entre deux tuiles en pixels
+#' @return Vecteur entier d'indices de départ
+#' @keywords internal
+.tile_starts <- function(n, size, step) {
+  if (n <= size) return(1L)
+  last <- as.integer(n - size + 1L)
+  s <- seq.int(1L, last, by = max(1L, step))
+  if (s[length(s)] != last) s <- c(s, last)
+  as.integer(s)
+}
+
+#' Poids de fondu (taper linéaire) d'une tuile
+#'
+#' Poids proche de 0 sur les `margin` pixels de bordure, 1 au cœur. Les pixels
+#' de bord — les moins fiables, le modèle n'y voit qu'un contexte tronqué —
+#' pèsent ainsi peu face au cœur de la tuile voisine.
+#'
+#' @param x SpatRaster tuile (gabarit géométrique)
+#' @param margin_x,margin_y Largeur du fondu en pixels
+#' @return SpatRaster mono-bande de poids dans ]0, 1]
+#' @keywords internal
+.feather_weights <- function(x, margin_x, margin_y) {
+  taper <- function(n, m) {
+    if (m < 1) return(rep(1, n))
+    i <- seq_len(n)
+    pmax(pmin(1, pmin(i, n - i + 1) / (m + 1)), 1e-3)
+  }
+  wx <- taper(ncol(x), margin_x)
+  wy <- taper(nrow(x), margin_y)
+  # terra remplit ligne par ligne
+  setValues(rast(x[[1]]), rep(wy, each = ncol(x)) * rep(wx, times = nrow(x)))
+}
+
+#' Recoller les prédictions par moyenne pondérée (fondu sur le recouvrement)
+#'
+#' Remplace `terra::merge()`, qui conservait brutalement la valeur de la
+#' première tuile dans la zone de recouvrement et laissait donc une couture
+#' nette à chaque limite de tuile.
+#'
+#' Les NA sont exclus de la moyenne (poids nul) : une tuile partiellement
+#' invalide n'efface plus les valeurs de ses voisines.
+#'
+#' @param preds Liste de SpatRasters prédits (même grille, même résolution)
+#' @param margin_x,margin_y Largeur du fondu en pixels
+#' @return SpatRaster mosaïqué
+#' @keywords internal
+mosaiquer_predictions <- function(preds, margin_x = 0L, margin_y = 0L) {
+  if (length(preds) == 1) return(preds[[1]])
+
+  num <- vector("list", length(preds))
+  den <- vector("list", length(preds))
+  for (i in seq_along(preds)) {
+    p <- preds[[i]]
+    valide <- !is.na(p)
+    w <- ifel(valide, .feather_weights(p, margin_x, margin_y), 0)
+    num[[i]] <- ifel(valide, p, 0) * w
+    den[[i]] <- w
+  }
+
+  somme <- terra::mosaic(terra::sprc(num), fun = "sum")
+  poids <- terra::mosaic(terra::sprc(den), fun = "sum")
+  ifel(poids > 0, somme / poids, NA)
 }
 
 #' Exécuter l'inférence sur une tuile
@@ -1059,6 +1154,31 @@ with rasterio.open("__INPUT_PATH__") as src:
 
 num_bands, H, W = image.shape
 print(f"Image chargee: {num_bands} bandes, {H}x{W} px")
+
+# ======================================================================
+# Neutraliser les NA de l entree
+# ======================================================================
+# Un seul pixel NaN suffit a rendre NaN la prediction de TOUTE la tuile :
+# l attention spatiale du PVTv2 (et les convolutions du UNet) propagent le
+# NaN a l ensemble de la carte de features. C est ce qui produisait des
+# tuiles entierement blanches dans la mosaique quand l ortho avait un trou
+# (tuile WMS en echec, bord de mosaique RVB/IRC desaligne).
+# On remplace par la mediane des pixels valides, puis on remet le masque NA
+# sur la prediction finale.
+nan_mask = ~np.isfinite(image).all(axis=0)  # (H, W)
+n_nan = int(nan_mask.sum())
+if n_nan:
+    pct_nan = 100.0 * n_nan / nan_mask.size
+    print(f"ATTENTION: {n_nan} pixel(s) NA/inf dans la tuile ({pct_nan:.2f}%)"
+          " -> remplaces par la mediane avant inference")
+    valides = image[:, ~nan_mask]
+    if valides.size:
+        remplissage = np.median(valides, axis=1)
+    else:
+        print("  Tuile entierement NA : prediction impossible, sortie NA")
+        remplissage = np.zeros(num_bands, dtype=np.float32)
+    for _c in range(num_bands):
+        image[_c][nan_mask] = remplissage[_c]
 
 # Tensor brut - le modele Open-Canopy attend les valeurs brutes (pas de normalisation)
 tensor = torch.from_numpy(image).unsqueeze(0)  # (1, C, H, W)
@@ -1471,10 +1591,12 @@ _pad_H = ((_orig_H + _pad - 1) // _pad) * _pad
 _pad_W = ((_orig_W + _pad - 1) // _pad) * _pad
 
 if _pad_H != _orig_H or _pad_W != _orig_W:
-    print(f"Padding: {_orig_H}x{_orig_W} -> {_pad_H}x{_pad_W}")
-    padded = torch.zeros(1, num_bands, _pad_H, _pad_W, dtype=tensor.dtype)
-    padded[:, :, :_orig_H, :_orig_W] = tensor
-    tensor = padded
+    print(f"Padding: {_orig_H}x{_orig_W} -> {_pad_H}x{_pad_W} (replicate)")
+    # Padding par replication et non par des zeros : une bande de zeros est
+    # vue par le modele comme du noir / sol nu et cree un fort effet de bord
+    # sur les dernieres lignes et colonnes de la tuile.
+    tensor = nn.functional.pad(
+        tensor, (0, _pad_W - _orig_W, 0, _pad_H - _orig_H), mode="replicate")
 
 with torch.no_grad():
     # Debug : verifier les features du backbone
@@ -1517,13 +1639,26 @@ with torch.no_grad():
     pred = np.clip(pred, 0, 500)
     pred = np.round(pred, 1)
 
-    print(f"CHM predit: min={pred.min():.1f}m, max={pred.max():.1f}m, "
-          f"mean={pred.mean():.1f}m")
+    # Restaurer le masque NA de l entree (les pixels combles a la mediane
+    # ne sont pas des predictions valides)
+    if n_nan:
+        if pred.ndim == 2:
+            pred[nan_mask] = np.nan
+        elif pred.ndim == 3:
+            pred[:, nan_mask] = np.nan
+
+    _fini = np.isfinite(pred)
+    if not _fini.any():
+        print("ATTENTION: prediction entierement NA pour cette tuile")
+    else:
+        print(f"CHM predit: min={np.nanmin(pred):.1f}m, max={np.nanmax(pred):.1f}m, "
+              f"mean={np.nanmean(pred):.1f}m, "
+              f"NA={100.0 * (~_fini).sum() / _fini.size:.2f}%")
 
 # ======================================================================
 # Sauvegarder le resultat
 # ======================================================================
-profile.update(count=1, dtype="float32", compress="lzw")
+profile.update(count=1, dtype="float32", compress="lzw", nodata=float("nan"))
 with rasterio.open("__OUTPUT_PATH__", "w", **profile) as dst:
     dst.write(pred.astype(np.float32), 1)
 
@@ -1609,9 +1744,11 @@ combine_rvb_irc <- function(rvb, irc) {
 #' @param model_path Chemin du modèle .ckpt
 #' @param model_name "unet" ou "pvtv2"
 #' @param tile_size Taille des tuiles en mètres
+#' @param overlap Chevauchement entre tuiles en mètres (fondu au recollement)
 #' @return SpatRaster CHM prédit
 run_inference <- function(rvb, irc, model_path, model_name = "pvtv2",
-                           tile_size = 1000, open_canopy_src = NULL,
+                           tile_size = 1000, overlap = 200,
+                           open_canopy_src = NULL,
                            progress_callback = NULL) {
   message("\n=== Inférence Open-Canopy ===")
 
@@ -1622,15 +1759,24 @@ run_inference <- function(rvb, irc, model_path, model_name = "pvtv2",
   r_1_5m <- resample_to_spot(rgbn)
 
   # 3. Découper en tuiles
-  tiles <- make_inference_tiles(r_1_5m, tile_size = tile_size)
+  tiles <- make_inference_tiles(r_1_5m, tile_size = tile_size,
+                                 overlap = overlap)
+  margin_x <- attr(tiles, "margin_x")
+  margin_y <- attr(tiles, "margin_y")
+  if (is.null(margin_x)) margin_x <- 0L
+  if (is.null(margin_y)) margin_y <- 0L
   if (is.function(progress_callback)) {
     progress_callback(list(type = "inference_phase_start",
                            n_tiles = length(tiles),
                            model = model_name))
   }
 
-  # 4. Prédire chaque tuile
+  # 4. Prédire chaque tuile. Une tuile en échec ne doit plus interrompre tout
+  # le traitement : on la signale et on continue, le recouvrement des tuiles
+  # voisines comble une partie du trou.
   predictions <- list()
+  echecs <- character(0)
+  vides <- character(0)
   for (i in seq_along(tiles)) {
     tile_name <- names(tiles)[i]
     message(sprintf("  Inférence tuile %d/%d: %s", i, length(tiles), tile_name))
@@ -1640,26 +1786,50 @@ run_inference <- function(rvb, irc, model_path, model_name = "pvtv2",
                              model = model_name,
                              tile_name = tile_name))
     }
-    pred <- predict_tile(tiles[[i]], model_path, model_name, open_canopy_src)
-    if (!is.null(pred)) {
-      predictions[[tile_name]] <- pred
+    pred <- tryCatch(
+      predict_tile(tiles[[i]], model_path, model_name, open_canopy_src),
+      error = function(e) {
+        warning(sprintf("Tuile %s : inférence en échec (%s)",
+                        tile_name, conditionMessage(e)), call. = FALSE)
+        NULL
+      }
+    )
+    if (is.null(pred)) {
+      echecs <- c(echecs, tile_name)
+      next
     }
+    n_valides <- as.numeric(global(!is.na(pred), "sum", na.rm = TRUE)[1, 1])
+    if (n_valides == 0) {
+      vides <- c(vides, tile_name)
+      warning(sprintf("Tuile %s : prédiction entièrement NA (entrée invalide ?)",
+                      tile_name), call. = FALSE)
+    }
+    predictions[[tile_name]] <- pred
+  }
+
+  if (length(echecs) > 0 || length(vides) > 0) {
+    message(sprintf("  %d tuile(s) en échec, %d tuile(s) entièrement NA sur %d",
+                    length(echecs), length(vides), length(tiles)))
   }
 
   if (length(predictions) == 0) {
     stop("Aucune prédiction réussie.")
   }
 
-  # 5. Mosaïquer. `predictions` est nommé par tuile ; do.call(merge, …)
-  # sans dénommer tombe sur base::merge faute de matcher `x`, d'où
-  # "l'argument x est manquant, avec aucune valeur par défaut" quand
-  # on a > 1 tuile. Passer explicitement par terra::merge en stripant
-  # les noms pour forcer le matching positionnel.
+  # 5. Mosaïquer par moyenne pondérée sur le recouvrement. terra::merge()
+  # gardait la valeur de la première tuile dans la zone commune : la couture
+  # tombait donc exactement sur les pixels de bordure, les moins fiables.
   if (length(predictions) == 1) {
     chm <- predictions[[1]]
   } else {
-    message("Mosaïquage des prédictions...")
-    chm <- do.call(terra::merge, unname(predictions))
+    message("Mosaïquage des prédictions (fondu pondéré)...")
+    chm <- mosaiquer_predictions(unname(predictions), margin_x, margin_y)
+  }
+
+  n_trous <- as.numeric(global(is.na(chm), "sum", na.rm = TRUE)[1, 1])
+  if (n_trous > 0) {
+    message(sprintf("  %.2f%% de la mosaïque reste sans prédiction (NA)",
+                    100 * n_trous / ncell(chm)))
   }
 
   names(chm) <- "chm_predicted"
